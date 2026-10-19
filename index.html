@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="icon.png">
+  <title>mod-audit · 整合包冲突分析工具</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div id="app">
+  <header>
+    <div class="brand"><span class="dot"></span>mod-audit<small>整合包冲突分析工具</small></div>
+    <span id="inst-chip" class="chip">等待拖入</span>
+    <span id="chip-mods" class="chip link" title="在资源管理器中打开 mods 文件夹">— mod</span>
+    <span id="chip-inj" class="chip link" title="打开注入点分析">— 注入点</span>
+    <span id="chip-crit" class="chip link" title="高亮所有含高危内容的节点，点击空白处取消">— 高危</span>
+    <span class="spacer"></span>
+    <span id="status" class="chip" style="display:none"></span>
+    <button id="btn-issues" class="btn" disabled>全局面板</button>
+    <button id="btn-fit" class="btn" disabled>视图自适应</button>
+    <button id="btn-reset" class="btn">重置</button>
+    <div id="progress"><i></i></div>
+  </header>
+
+  <main>
+    <div id="stage" class="idle">
+      <canvas id="graph" tabindex="0"></canvas>
+      <input id="dir-pick" type="file" webkitdirectory directory multiple hidden>
+
+      <div id="search">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round">
+          <circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/>
+        </svg>
+        <input id="q" type="text" placeholder="搜索 mod…（回车跳过去）" autocomplete="off" spellcheck="false">
+        <span id="q-count"></span>
+      </div>
+
+      <div id="dropzone">
+        <div class="icon">
+          <svg viewBox="0 0 48 48" width="30" height="30" fill="none" stroke="currentColor"
+               stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M24 9v19"/><path d="M16 20l8 8 8-8"/>
+            <path d="M10 31v5a4 4 0 0 0 4 4h20a4 4 0 0 0 4-4v-5"/>
+          </svg>
+        </div>
+        <h2>把整个游戏目录拖进来</h2>
+        <p>或者只拖 <b>mods</b> 文件夹。只会读取 mods / versions / logs / crash-reports，其余目录直接跳过。</p>
+        <div class="privacy">本地分析 · 不上传 · 不执行被分析的代码</div>
+      </div>
+
+      <div id="hint">
+        <div id="hint-line">拖卡片 = 移动 · 滚轮 = 缩放 · 拖空白 = 平移 · 双击 = 自适应</div>
+        <div class="hint-note">所有数据都由浏览器本地运行，不经过云端服务器，静态分析器的结果不一定准确。</div>
+      </div>
+
+      <div id="tools">
+        <button id="btn-vers" class="tool" disabled>版本统计</button>
+        <button id="btn-export-lite" class="tool" disabled>导出精简</button>
+        <button id="btn-export" class="tool" disabled>导出全量</button>
+        <button id="btn-cam" class="tool">摄像机：跟随</button>
+        <button id="btn-panel" class="tool">外观</button>
+      </div>
+
+      <div id="panel">
+        <div class="prow">
+          <label>发光宽度</label>
+          <input id="s-glow" type="range" min="0" max="34" step="1" value="12">
+          <span id="v-glow">12</span>
+        </div>
+        <div class="prow">
+          <label>描边宽度</label>
+          <input id="s-rim" type="range" min="0" max="6" step="0.5" value="1.5">
+          <span id="v-rim">1.5</span>
+        </div>
+        <div class="prow">
+          <label>连线宽度</label>
+          <input id="s-edge" type="range" min="0.2" max="4" step="0.1" value="1">
+          <span id="v-edge">1</span>
+        </div>
+        <button id="btn-look-reset" class="tool">恢复默认</button>
+      </div>
+    </div>
+
+    <aside id="side">
+      <div class="side-head" id="side-head"></div>
+      <div class="side-body" id="side-body"></div>
+    </aside>
+  </main>
+</div>
+
+<!-- 全屏投放层 -->
+<div id="drop-overlay">
+  <div class="card">
+    <div class="icon">
+      <svg viewBox="0 0 48 48" width="46" height="46" fill="none" stroke="currentColor"
+           stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M24 9v19"/><path d="M16 20l8 8 8-8"/>
+        <path d="M10 31v5a4 4 0 0 0 4 4h20a4 4 0 0 0 4-4v-5"/>
+      </svg>
+    </div>
+    <h2>松开以添加文件</h2>
+    <p>整个游戏目录，或 mods 文件夹</p>
+    <div class="hint">
+      只读取 mods / versions / logs / crash-reports<br>
+      <span class="privacy">本地分析 · 不上传 · 不执行被分析的代码</span>
+    </div>
+  </div>
+</div>
+
+<!-- 全局面板 -->
+<div id="modal">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h3>全局面板</h3>
+      <span class="spacer"></span>
+      <button id="sheet-close">关闭</button>
+    </div>
+    <div class="sheet-body" id="sheet-body"></div>
+  </div>
+</div>
+
+<!-- 注入点分析 -->
+<div id="tool">
+  <div class="sheet wide">
+    <div class="sheet-head">
+      <h3>注入点</h3>
+      <input id="inj-q" type="text" placeholder="过滤：类名 / 方法 / 模组 / 注入类型" autocomplete="off" spellcheck="false">
+      <span id="inj-count" class="chip"></span>
+      <span class="spacer"></span>
+      <button id="inj-back" class="tool" style="display:none">← 列表</button>
+      <button id="inj-close">关闭</button>
+    </div>
+    <div class="sheet-body split">
+      <div id="inj-list"></div>
+      <div id="inj-detail"><div class="empty">选择左侧任意一条查看详情</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- 文字右键菜单 -->
+<div id="ctx-menu">
+  <div class="ctx-item" data-act="copy">复制</div>
+  <div class="ctx-item" data-act="search">搜索</div>
+</div>
+
+<!-- 版本统计 -->
+<div id="ver">
+  <div class="sheet wide">
+    <div class="sheet-head">
+      <h3>版本统计</h3>
+      <span class="chip">蓝条 = 单个模组的适配范围 · 绿线 = 全部模组的交集</span>
+      <span class="spacer"></span>
+      <button id="ver-close">关闭</button>
+    </div>
+    <div class="sheet-body" id="ver-body"></div>
+  </div>
+</div>
+
+<div id="boot-error"></div>
+
+<script src="analyzer.js"></script>
+<script src="version.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

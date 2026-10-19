@@ -1,0 +1,15 @@
+# 生成物：报告每次跑都会重写，不进版本库
+out/
+
+# 子代理 / 探针的中间产物：体积大、可随时重跑
+research/
+
+# 桌面壳：依赖、产物、缓存、构建时复制的 app/
+desktop/
+scripts/
+
+# 系统垃圾
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store
