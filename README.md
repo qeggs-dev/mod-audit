@@ -2,11 +2,11 @@
 
 # mod-audit
 
----
-
 ![License](https://img.shields.io/github/license/qeggs-dev/mod-audit) ![Stars](https://img.shields.io/github/stars/qeggs-dev/mod-audit) ![Forks](https://img.shields.io/github/forks/qeggs-dev/mod-audit) ![Issues](https://img.shields.io/github/issues/qeggs-dev/mod-audit)
 
 ![Last Commit](https://img.shields.io/github/last-commit/qeggs-dev/mod-audit) ![Web Package](https://img.shields.io/badge/Web-Page-blue) ![Static Analysi](https://img.shields.io/badge/Static-Analysis-yellow) ![Minecraft JavaEdition](https://img.shields.io/badge/Minecraft-JavaEdition-red)
+
+---
 
 </div>
 
