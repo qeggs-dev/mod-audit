@@ -1,18 +1,11 @@
 <div style="text-align: center;">
 
-<h1>mod-audit</h1>
+# mod-audit
 
-<hr/>
+---
 
-<img src="https://img.shields.io/github/license/qeggs-dev/mod-audit" alt="License">
-<img src="https://img.shields.io/github/stars/qeggs-dev/mod-audit" alt="Stars">
-<img src="https://img.shields.io/github/forks/qeggs-dev/mod-audit" alt="Forks">
-<img src="https://img.shields.io/github/issues/qeggs-dev/mod-audit" alt="Issues">
-<br/>
-<img src="https://img.shields.io/github/last-commit/qeggs-dev/mod-audit" alt="Last Commit">
-<img src="https://img.shields.io/badge/Web-Page-blue">
-<img src="https://img.shields.io/badge/Static-Analysis-yellow">
-<img src="https://img.shields.io/badge/Minecraft-JavaEdition-red" alt="Minecraft">
+![License](https://img.shields.io/github/license/qeggs-dev/mod-audit) ![Stars](https://img.shields.io/github/stars/qeggs-dev/mod-audit) ![Forks](https://img.shields.io/github/forks/qeggs-dev/mod-audit) ![Issues](https://img.shields.io/github/issues/qeggs-dev/mod-audit)
+![Last Commit](https://img.shields.io/github/last-commit/qeggs-dev/mod-audit) ![Web Package](https://img.shields.io/badge/Web-Page-blue) ![Static Analysi](https://img.shields.io/badge/Static-Analysis-yellow) ![Minecraft JavaEdition](https://img.shields.io/badge/Minecraft-JavaEdition-red)
 
 </div>
 
