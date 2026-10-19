@@ -1,6 +1,22 @@
-# mod-audit
+<div style="text-align: center;">
 
-整合包冲突分析工具。**纯本地运行，不上传任何文件，不执行任何被分析的代码**——它只是把 jar 当字节读。
+<h1>mod-audit</h1>
+
+<hr/>
+
+<img src="https://img.shields.io/github/license/qeggs-dev/mod-audit" alt="License">
+<img src="https://img.shields.io/github/stars/qeggs-dev/mod-audit" alt="Stars">
+<img src="https://img.shields.io/github/forks/qeggs-dev/mod-audit" alt="Forks">
+<img src="https://img.shields.io/github/issues/qeggs-dev/mod-audit" alt="Issues">
+<br/>
+<img src="https://img.shields.io/github/last-commit/qeggs-dev/mod-audit" alt="Last Commit">
+<img src="https://img.shields.io/badge/Web-Page-blue">
+<img src="https://img.shields.io/badge/Static-Analysis-yellow">
+<img src="https://img.shields.io/badge/Minecraft-JavaEdition-red" alt="Minecraft">
+
+</div>
+
+MC 整合包冲突分析工具。**纯本地运行，不上传任何文件，不执行任何被分析的代码**——它只是把 jar 当字节读。
 
 > **这是静态分析器：报告里的一切都只是「可能导致问题」的提示，不是运行时事实。本分析器不保证准确。**
 > 它的价值是缩小排查范围（从"140 个 mod 里猜"缩到"这 2 个"），不是下判决。
