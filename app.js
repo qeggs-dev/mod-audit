@@ -2872,7 +2872,7 @@ function modSupportsMc(mod, mcVersion) {
   var dirPath = null;          // 已加载目录的真实路径（Electron 才拿得到）
   var dirName = '';
   var lastSignature = '';      // 用来判断「又拖了同一个目录」
-  var appVersion = '0.21.6';    // 浏览器版兜底；桌面版以 preload 返回值为准
+  var appVersion = '0.21.7';    // 浏览器版兜底；桌面版以 preload 返回值为准
 
   function applyTitle(name) {
     document.title = (name ? name + ' · ' : '') + 'mod-audit v' + appVersion;
@@ -3311,9 +3311,11 @@ function modSupportsMc(mod, mcVersion) {
       if (ta) ta.value = (cfgState.strfilter || []).join('\n');
       var ts = document.getElementById('cfg-strskip');
       if (ts) ts.value = (cfgState.strSkip || (A.DEFAULT_STR_SKIP || [])).join('\n');
-      ['glow', 'stroke', 'edge'].forEach(function (k) {
+      // 样式滑块直接读写 graph.look（原「外观」面板已移除，这里是唯一入口）
+      var LOOK_MAP = { glow: 'glow', stroke: 'rim', edge: 'edge' };
+      Object.keys(LOOK_MAP).forEach(function (k) {
         var el = document.getElementById('cfg-' + k);
-        if (el && cfgState['style.' + k] != null) el.value = cfgState['style.' + k];
+        if (el) el.value = graph.look[LOOK_MAP[k]];
       });
       validateStrFilter();
     }
@@ -3364,9 +3366,14 @@ function modSupportsMc(mod, mcVersion) {
         A.setStringFilters({ skip: good });
         saveCfg();
       });
-      ['glow', 'stroke', 'edge'].forEach(function (k) {
+      var LOOK_MAP2 = { glow: 'glow', stroke: 'rim', edge: 'edge' };
+      Object.keys(LOOK_MAP2).forEach(function (k) {
         var el = document.getElementById('cfg-' + k);
-        if (el) el.addEventListener('input', function () { cfgState['style.' + k] = +el.value; saveCfg(); });
+        if (el) el.addEventListener('input', function () {
+          graph.look[LOOK_MAP2[k]] = parseFloat(el.value);
+          saveLook();
+          saveCfg();
+        });
       });
     }
 
@@ -3387,7 +3394,7 @@ function modSupportsMc(mod, mcVersion) {
     syncCam();
 
     /* 外观面板 */
-    var panel = document.getElementById('panel');
+    // 外观设置已并入设置面板，这里不再有独立浮层
     var LOOK_INPUTS = [
       ['s-glow', 'v-glow', 'glow'],
       ['s-rim', 'v-rim', 'rim'],
@@ -3424,14 +3431,7 @@ function modSupportsMc(mod, mcVersion) {
       }
     } catch (e) { }
     applyLookToInputs();
-    document.getElementById('btn-panel').addEventListener('click', function () {
-      panel.classList.toggle('on');
-    });
-    document.getElementById('btn-look-reset').addEventListener('click', function () {
-      graph.look = { glow: 14, rim: 1.5, edge: 1 };
-      applyLookToInputs();
-      saveLook();
-    });
+
 
     document.addEventListener('keydown', function (ev) {
       if (ev.key === 'Escape') {

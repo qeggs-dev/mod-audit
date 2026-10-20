@@ -57,7 +57,7 @@
         </section>
 
         <section class="cfg-block" style="--i:2">
-          <h4>样式配置<span>与右上角「外观」面板互通</span></h4>
+          <h4>样式配置<span>发光 / 描边 / 连线宽度</span></h4>
           <label class="cfg-row">发光宽度 <input type="range" id="cfg-glow" min="0" max="30" step="1"></label>
           <label class="cfg-row">描边宽度 <input type="range" id="cfg-stroke" min="0" max="6" step="0.5"></label>
           <label class="cfg-row">连线宽度 <input type="range" id="cfg-edge" min="0.5" max="4" step="0.5"></label>
@@ -103,27 +103,8 @@
         <button id="btn-export-lite" class="tool" disabled>导出精简</button>
         <button id="btn-export" class="tool" disabled>导出原始</button>
         <button id="btn-cam" class="tool">摄像机：跟随</button>
-        <button id="btn-panel" class="tool">外观</button>
       </div>
 
-      <div id="panel">
-        <div class="prow">
-          <label>发光宽度</label>
-          <input id="s-glow" type="range" min="0" max="34" step="1" value="12">
-          <span id="v-glow">12</span>
-        </div>
-        <div class="prow">
-          <label>描边宽度</label>
-          <input id="s-rim" type="range" min="0" max="6" step="0.5" value="1.5">
-          <span id="v-rim">1.5</span>
-        </div>
-        <div class="prow">
-          <label>连线宽度</label>
-          <input id="s-edge" type="range" min="0.2" max="4" step="0.1" value="1">
-          <span id="v-edge">1</span>
-        </div>
-        <button id="btn-look-reset" class="tool">恢复默认</button>
-      </div>
     </div>
 
     <aside id="side">
