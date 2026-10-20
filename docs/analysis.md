@@ -47,5 +47,4 @@
 - `analyzer.js` —— 核心，零依赖，浏览器与 Node 通用。接口：`collect()`（流式）/ `summarize()` / `analyze()`
 - `version.js` —— 统一的版本表示与比较（`parse` / `cmp` / `parseConstraint` / `satisfies`）
 - `index.html` + `app.css` + `app.js` —— 前端，`file://` 直接打开，无构建步骤
-- `cli.js` —— 命令行 + 目录发现
-- `smoke.js` / `layout-probe.js` / `debug.js` —— 冒烟测试、排版自检、一次性诊断
+- `worker.js` —— 把 `analyzer.js` 的整套分析放进 Web Worker，主线程只负责绘制

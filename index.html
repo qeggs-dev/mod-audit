@@ -21,8 +21,50 @@
     <button id="btn-issues" class="btn" disabled>全局面板</button>
     <button id="btn-fit" class="btn" disabled>视图自适应</button>
     <button id="btn-reset" class="btn">重置</button>
+    <button id="btn-cfg" class="btn" title="设置">设置</button>
     <div id="progress"><i></i></div>
   </header>
+
+  <!-- 设置：样式 / 导出过滤 / 字符串过滤 -->
+  <div id="cfg">
+    <div class="sheet cfg-sheet" role="dialog" aria-label="设置">
+      <div class="cfg-head">
+        <h3>设置</h3>
+        <button id="cfg-close" class="btn btn-icon" title="关闭" aria-label="关闭">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div class="cfg-body">
+        <section class="cfg-block" style="--i:0">
+          <h4>导出过滤<span>全量（原始数据）导出时包含哪些内容</span></h4>
+          <label class="cfg-check"><input type="checkbox" data-cfg="exp.base" checked> 基础信息（文件 / 加载器 / id / 版本）</label>
+          <label class="cfg-check"><input type="checkbox" data-cfg="exp.deps" checked> 依赖声明（MC 区间 / depends / forge 依赖）</label>
+          <label class="cfg-check"><input type="checkbox" data-cfg="exp.injections" checked> 注入点记录</label>
+          <label class="cfg-check"><input type="checkbox" data-cfg="exp.desc"> 模组概览文本</label>
+          <label class="cfg-check"><input type="checkbox" data-cfg="exp.code"> 代码大小 / Java 版本</label>
+          <label class="cfg-check"><input type="checkbox" data-cfg="exp.consts"> 常量字符串（待实现）</label>
+        </section>
+
+        <section class="cfg-block" style="--i:1">
+          <h4>字符串过滤<span>常量池扫描时排除哪些字符串（每行一个正则）</span></h4>
+          <textarea id="cfg-strskip" spellcheck="false"></textarea>
+          <div class="cfg-hint">默认规则针对描述符 / 类名 / 泛型签名 / 孤立单词；清空则保留全部字符串（体积会大很多）。</div>
+          <div id="cfg-strskip-err" class="cfg-err"></div>
+          <div class="cfg-sub">导出时额外排除</div>
+          <textarea id="cfg-strfilter" spellcheck="false" placeholder="^DEBUG_&#10;.*\.tmp$"></textarea>
+          <div id="cfg-strfilter-err" class="cfg-err"></div>
+        </section>
+
+        <section class="cfg-block" style="--i:2">
+          <h4>样式配置<span>与右上角「外观」面板互通</span></h4>
+          <label class="cfg-row">发光宽度 <input type="range" id="cfg-glow" min="0" max="30" step="1"></label>
+          <label class="cfg-row">描边宽度 <input type="range" id="cfg-stroke" min="0" max="6" step="0.5"></label>
+          <label class="cfg-row">连线宽度 <input type="range" id="cfg-edge" min="0.5" max="4" step="0.5"></label>
+        </section>
+      </div>
+    </div>
+  </div>
 
   <main>
     <div id="stage" class="idle">
@@ -34,7 +76,7 @@
              stroke-width="2" stroke-linecap="round">
           <circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/>
         </svg>
-        <input id="q" type="text" placeholder="搜索 mod…（回车跳过去）" autocomplete="off" spellcheck="false">
+        <input id="q" type="text" placeholder="搜索 mod…　可用 id: / file: / desc: / loader: 限定范围" autocomplete="off" spellcheck="false">
         <span id="q-count"></span>
       </div>
 
@@ -59,7 +101,7 @@
       <div id="tools">
         <button id="btn-vers" class="tool" disabled>版本统计</button>
         <button id="btn-export-lite" class="tool" disabled>导出精简</button>
-        <button id="btn-export" class="tool" disabled>导出全量</button>
+        <button id="btn-export" class="tool" disabled>导出原始</button>
         <button id="btn-cam" class="tool">摄像机：跟随</button>
         <button id="btn-panel" class="tool">外观</button>
       </div>

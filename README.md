@@ -19,17 +19,10 @@ MC 整合包冲突分析工具。**纯本地运行，不上传任何文件，不
 
 **在线版**：`https://qeggs-dev.github.io/mod-audit/`（部署方法见 [docs/building.md](docs/building.md#部署到-github-pages在线版)）
 
-**本地网页版**：双击 `index.html`，把整个游戏目录拖进窗口即可（无构建步骤、无需服务器）。只会读 `mods` / `versions` / `logs` / `crash-reports` 这几个目录，`.` 开头的目录跳过。
+**本地网页版**：双击 `index.html`，把整个游戏目录拖进窗口即可（无构建步骤、无需服务器；分析在 Web Worker 里跑，界面不卡）。只会读 `mods` / `versions` / `logs` / `crash-reports` 这几个目录，`.` 开头的目录跳过。
 
 **桌面版**：Windows 提供安装包，Linux 提供 AppImage（构建见 [docs/building.md](docs/building.md)）。**macOS 不提供打包**——请直接用网页版，或在 Mac 上自行构建。
 
-**命令行**：
-
-```bash
-node cli.js <游戏目录 | 版本目录 | mods目录> [--json] [--out 报告.txt] [--export r.md]
-```
-
-`--list` 是最先该跑的：如果它认错了目录，后面都白搭。
 
 ## 文档
 

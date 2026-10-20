@@ -230,16 +230,52 @@
     if (this.onSelect) this.onSelect(null);
   };
 
-  /** 搜索：按 id / 文件名 / 概要匹配，命中以外的节点会被压暗 */
+  /** 搜索：默认匹配 id / 文件名 / 概要 / 加载器，命中以外的节点会被压暗。
+   *  支持 领域:关键词 限定范围；领域不认识时整串当关键词。 */
+  /* 搜索支持的领域：写成 "领域:关键词" 只在该领域里搜。
+     不写前缀、或前缀不是已知领域时，整串拿去匹配所有领域。 */
+  var SEARCH_FIELDS = {
+    id:      function (nd) { return nd.id || ''; },
+    name:    function (nd) { return nd.id || ''; },
+    file:    function (nd) { return nd.file || ''; },
+    jar:     function (nd) { return nd.file || ''; },
+    desc:    function (nd) { return nd.desc || ''; },
+    loader:  function (nd) { return (nd.mod && nd.mod.loaders || []).join(' '); },
+    str:     function (nd) { return (nd.mod && nd.mod.constStrings || []).join('\n'); },
+    const:   function (nd) { return (nd.mod && nd.mod.constStrings || []).join('\n'); }
+  };
+
   Graph.prototype.setSearch = function (q) {
-    this.searchQuery = String(q == null ? '' : q).trim().toLowerCase();
-    if (!this.searchQuery) { this._match = null; return 0; }
+    var raw = String(q == null ? '' : q).trim();
+    this.searchQuery = raw.toLowerCase();
+    if (!this.searchQuery) { this._match = null; this.searchField = null; return 0; }
+
+    // 解析 "领域:关键词"；只有领域已注册才算数，否则整串都是关键词
+    var field = null, term = raw;
+    var mm = /^([A-Za-z]+)\s*:\s*(.*)$/.exec(raw);
+    if (mm) {
+      var key = mm[1].toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(SEARCH_FIELDS, key)) {
+        field = key;
+        term = mm[2].trim();
+      }
+    }
+    this.searchField = field;
+    this.searchTerm = term.toLowerCase();
+    if (!this.searchTerm) { this._match = null; return 0; }
+
     var m = new Set();
     for (var i = 0; i < this.nodes.length; i++) {
       var nd = this.nodes[i];
       if (nd.isRoot) continue;
-      var hay = (nd.id || '') + ' ' + (nd.file || '') + ' ' + (nd.desc || '');
-      if (hay.toLowerCase().indexOf(this.searchQuery) >= 0) m.add(i);
+      var hay;
+      if (field) {
+        hay = SEARCH_FIELDS[field](nd);
+      } else {
+        hay = '';
+        for (var k in SEARCH_FIELDS) hay += SEARCH_FIELDS[k](nd) + ' ';
+      }
+      if (String(hay).toLowerCase().indexOf(this.searchTerm) >= 0) m.add(i);
     }
     this._match = m;
     return m.size;
@@ -770,6 +806,35 @@
       else if (dA != null) alpha *= dA;
       else if (dB != null) alpha *= dB;
 
+      // 选中某个节点时，与它无关的连线降到背景层：改用同心圆涟漪
+      // （从边的中点扩散、到最大半径后回收），把注意力让给焦点关系。
+      if (dim && alpha > 0.02) {
+        var rmx = (a.x + b.x) / 2, rmy = (a.y + b.y) / 2;
+        var Rmax = 20 * invZoom;
+        var rphase = (now / 1500) % 1;
+        ctx.setLineDash([]);
+        for (var ri = 0; ri < 3; ri++) {
+          var rt = (rphase + ri / 3) % 1;
+          var rr = (2 + rt * Rmax) * 1;
+          var ra = alpha * 1.35 * (1 - rt) * (1 - rt);
+          if (ra <= 0.012) continue;
+          ctx.beginPath();
+          ctx.arc(rmx, rmy, rr, 0, 6.2832);
+          ctx.strokeStyle = 'rgba(' + rgb + ',' + ra + ')';
+          ctx.lineWidth = Math.max(0.5, 1.05 * look.edge) * invZoom;
+          ctx.stroke();
+        }
+      }
+
+      // 高亮的边：能量从选中节点出发冲向另一端。
+      // 记下「开始高亮」的时刻，作为这一趟冲击的起点；不再高亮时清空。
+      if (hot) {
+        if (e._hotT0 == null) { e._hotT0 = now; e._hitFired = false; }
+      } else if (e._hotT0 != null) {
+        e._hotT0 = null;
+        e._hitFired = false;
+      }
+
       ctx.strokeStyle = 'rgba(' + rgb + ',' + alpha + ')';
       ctx.lineWidth = Math.max(0.55, width * look.edge) * invZoom;
 
@@ -792,7 +857,80 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      /* 依赖边加箭头：尖头指到「被依赖方」的卡片边缘 */
+      /* 高亮边：用「蒙版扫过」表达能量推进——
+         亮区靠近出发点、暗区靠近目标端，亮暗分界随时间向目标推进；
+         抵达瞬间销毁蒙版、点亮目标节点，并在「卡片边缘与连线的交点」炸开。 */
+      if (hot && e._hotT0 != null) {
+        var srcN = (e.a === sel) ? a : b;
+        var dstN = (e.a === sel) ? b : a;
+        var dstIdx = (e.a === sel) ? e.b : e.a;
+        var sp = (now - e._hotT0) / 520;
+        var spc = sp < 0 ? 0 : (sp > 1 ? 1 : sp);
+
+        if (!e._hitFired) {
+          // 蒙版：一层压暗膜覆盖「当前位置 → 终点」这一段（初始覆盖整条），
+          // 随动画向终点收缩；被揭开的部分则用亮色重描，形成"亮区向终点推进"。
+          var mxP = srcN.x + (dstN.x - srcN.x) * spc;
+          var myP = srcN.y + (dstN.y - srcN.y) * spc;
+          ctx.save();
+          ctx.setLineDash([]);
+
+          // 只有「仍被遮住」的那段需要额外绘制：
+          // 未被覆盖的部分直接露出原来那条线（保持原有颜色与透明度）。
+          if (spc < 0.999) {
+            ctx.strokeStyle = 'rgba(6,8,12,0.62)';
+            ctx.lineWidth = Math.max(1.6, (width + 2.4) * look.edge) * invZoom;
+            ctx.beginPath();
+            ctx.moveTo(mxP, myP);
+            ctx.lineTo(dstN.x, dstN.y);
+            ctx.stroke();
+          }
+          ctx.restore();
+          if (spc >= 1) {
+            e._hitFired = true;
+            var tn0 = N[dstIdx];
+            if (tn0) tn0._hitAt = now;
+            var vx = dstN.x - srcN.x, vy = dstN.y - srcN.y;
+            var vlen = Math.sqrt(vx * vx + vy * vy) || 1;
+            var ux = vx / vlen, uy = vy / vlen;
+            var hwI = dstN.w / 2, hhI = dstN.h / 2;
+            var tdX = Math.abs(ux) < 1e-6 ? 1e9 : hwI / Math.abs(ux);
+            var tdY = Math.abs(uy) < 1e-6 ? 1e9 : hhI / Math.abs(uy);
+            var tdI = Math.min(tdX, tdY);
+            e._impactPt = { x: dstN.x - ux * tdI, y: dstN.y - uy * tdI, ang: Math.atan2(uy, ux) };
+            e._impactAt = now;
+          }
+        } else if (e._impactPt) {
+          var age = now - (e._impactAt || now);
+          var idur = 420;
+          if (age >= 0 && age < idur) {
+            var ip = age / idur;
+            var px = e._impactPt.x, py = e._impactPt.y, ang0 = e._impactPt.ang;
+            ctx.save();
+            ctx.setLineDash([]);
+            ctx.strokeStyle = 'rgba(255,255,255,' + (0.85 * (1 - ip)) + ')';
+            ctx.lineWidth = Math.max(0.9, 1.8 * invZoom);
+            ctx.beginPath();
+            ctx.arc(px, py, (3 + ip * 20) * invZoom, 0, 6.2832);
+            ctx.stroke();
+            var shards = 7;
+            for (var si2 = 0; si2 < shards; si2++) {
+              var spread = (si2 / (shards - 1) - 0.5) * 1.75;
+              var sa = ang0 + spread;
+              var dist = (6 + ip * 26) * invZoom;
+              var sz = (1.6 + 1.6 * (1 - ip)) * invZoom;
+              ctx.save();
+              ctx.translate(px + Math.cos(sa) * dist, py + Math.sin(sa) * dist);
+              ctx.rotate(sa);
+              ctx.fillStyle = 'rgba(' + rgb + ',' + (0.9 * (1 - ip)) + ')';
+              ctx.fillRect(-sz, -sz * 0.55, sz * 2, sz * 1.1);
+              ctx.restore();
+            }
+            ctx.restore();
+          }
+        }
+      }
+
       if (e.type === 'dep' && e.from != null && e.to != null) {
         var nF = N[e.from], nT = N[e.to];
         if (nF && nT) {
@@ -846,6 +984,12 @@
       // 否则关掉那一刻 crit 变 false，遮罩立刻失效，淡出就被跳过了。
       if (critT > 0.01 && !nd.isRoot && !isSel && !isHov && nd.sev < 3) {
         alpha *= (1 - critT * 0.93);
+      }
+
+      // 冲击到达后的短暂点亮：目标节点在"被打到"之前保持原样
+      if (nd._hitAt != null) {
+        var sinceHit = now - nd._hitAt;
+        if (sinceHit >= 0 && sinceHit < 260) alpha = Math.min(1, alpha + 0.6 * (1 - sinceHit / 260));
       }
 
       // 「贴上去」入场：缩放 + 轻微过冲，逐张错开
@@ -921,9 +1065,44 @@
 
     /* 顶部高亮条：颜色 = 加载器 / 风险 */
     var th = isRoot ? 26 : TITLE_H;
-    rrPath(ctx, left, top, w, th, rad, rad, 0, 0);
-    ctx.fillStyle = 'rgba(' + rgb + ',0.92)';
-    ctx.fill();
+    var fams = (!isRoot && nd.mod && nd.mod.loaders) ? nd.mod.loaders : [];
+    if (fams.length > 1) {
+      // 多加载器：标题条按加载器等分上色（2 种各半、3 种各三分之一），
+      // 交界处用斜线切开；顺序按「谁在这个 mod 里占的代码更多」排。
+      // 分不出主次时（差距 < 80%），左端画一条竖灰条表示顺序未知。
+      ctx.save();
+      rrPath(ctx, left, top, w, th, rad, rad, 0, 0);
+      ctx.clip();
+      var cols = fams.slice(0, 3).map(function (l) { return FAM_COLOR[l] || '#5f6779'; });
+      var n = cols.length;
+      var segW = w / n;
+      ctx.globalAlpha = o.alpha * 0.92;
+      // 先整条铺第一种颜色，再用「平行四边形」覆盖右侧各段。
+      // 关键：交界必须是斜的（填充形状是斜的），而不是矩形硬边 + 另画一条斜线。
+      ctx.fillStyle = cols[0];
+      ctx.fillRect(left, top, w, th);
+      for (var si = 1; si < n; si++) {
+        var bx = left + si * segW;
+        ctx.beginPath();
+        ctx.moveTo(bx + th / 2, top);
+        ctx.lineTo(left + w, top);
+        ctx.lineTo(left + w, top + th);
+        ctx.lineTo(bx - th / 2, top + th);
+        ctx.closePath();
+        ctx.fillStyle = cols[si];
+        ctx.fill();
+      }
+      // 顺序未知：左端一条竖灰条，宽度 ≈ 一个圆角
+      if (nd.mod && nd.mod.orderKnown === false) {
+        ctx.globalAlpha = o.alpha * 0.95;
+        ctx.fillStyle = 'rgba(150,155,168,0.92)';
+        ctx.fillRect(left, top, rad, th);
+      }
+      ctx.restore();    } else {
+      rrPath(ctx, left, top, w, th, rad, rad, 0, 0);
+      ctx.fillStyle = 'rgba(' + rgb + ',0.92)';
+      ctx.fill();
+    }
     // 顶部一条细亮边，让色条有立体感（低精度下省略）
     if (o.detail >= 2) {
       rrPath(ctx, left + 1, top + 1, w - 2, Math.max(2, th * 0.34), rad, rad, 0, 0);
@@ -983,7 +1162,17 @@
     ctx.textBaseline = 'middle';
     var titleSize = isRoot ? 11 : w * 0.075;
     ctx.font = '700 ' + titleSize + 'px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = 'rgba(12,15,20,0.92)';
+    ctx.fillStyle = (function () {
+      // 标题字色跟着色条亮度走：亮底用深字，暗底用白字。
+      // 多加载器分色条最容易出现「深字压在深色半边」的情况。
+      var c = (fams && fams.length > 1) ? (FAM_COLOR[fams[0]] || '#5f6779') : null;
+      if (!c) return 'rgba(12,15,20,0.92)';
+      var r0 = parseInt(c.slice(1, 3), 16) || 0;
+      var g0 = parseInt(c.slice(3, 5), 16) || 0;
+      var b0 = parseInt(c.slice(5, 7), 16) || 0;
+      var lum = (0.299 * r0 + 0.587 * g0 + 0.114 * b0) / 255;
+      return lum < 0.55 ? 'rgba(255,255,255,0.95)' : 'rgba(12,15,20,0.92)';
+    })();
     ctx.fillText(fitText(ctx, nd.label, innerW - 12), left + PAD, top + th / 2 + 0.5);
 
     /* ---- 文字：正文（灰底详细内容） ---- */
@@ -1152,6 +1341,9 @@
   var currentReport = null;
   var currentInstance = null;   // 根节点信息面板用：加载器 / MC 版本
   var isLoading = false;      // 加载中：点画布不该弹文件选择框
+  var loadToken = 0;          // 每次加载一个令牌；新加载会让旧的那次作废
+    var activeWorker = null;    // 正在跑分析的 Worker（新加载时终止）
+    var lastFiles = null;       // 最近一次投放的文件列表（给 Worker 用）
   var hintEl = null;
   var HINT_IDLE = '拖卡片 = 移动 · 滚轮 = 缩放 · 拖空白 = 平移 · 双击 = 自适应';
 
@@ -1288,7 +1480,7 @@
       legendDot('#6ea8fe', 'Fabric', 'fabric') +
       legendDot('#ffb454', 'NeoForge', 'neoforge') +
       legendDot('#46d39a', 'Forge', 'forge') +
-      legendDot('#b98cff', '多加载器通用包', 'multi') +
+      legendDot('#b98cff', '多加载器（标题条按加载器分色）', 'multi') +
       '</div>' +
       '<div class="empty">卡片标题条下方灰区：注入点 / 类数 / 代码大小 / 模组概要。没有任何连线的卡片会淡下去。<br>连线仅用于表达关系，不参与节点排布；节点位置由自动排版决定，手动拖拽可覆盖。</div>' +
       '<div class="section-title">操作</div>' +
@@ -2676,7 +2868,7 @@ function modSupportsMc(mod, mcVersion) {
   var dirPath = null;          // 已加载目录的真实路径（Electron 才拿得到）
   var dirName = '';
   var lastSignature = '';      // 用来判断「又拖了同一个目录」
-  var appVersion = '0.18.1';    // 浏览器版兜底；桌面版以 preload 返回值为准
+  var appVersion = '0.21.0';    // 浏览器版兜底；桌面版以 preload 返回值为准
 
   function applyTitle(name) {
     document.title = (name ? name + ' · ' : '') + 'mod-audit v' + appVersion;
@@ -3047,19 +3239,133 @@ function modSupportsMc(mod, mcVersion) {
     /* 导出英文报表：精简 = 只留关键；全量 = 不截断（谁改谁 / 谁依赖谁全给） */
     function doExport(lite) {
       if (!currentReport) return;
-      var opts = lite ? { maxClasses: 40, maxNodes: 40, maxEdges: 60 } : {};
-      var md = A.renderEnglish(currentReport, opts);
-      var blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      var isRaw = !lite;
+      var body, mime, ext;
+      if (isRaw) {
+        // 全量档 = 原始数据转储（JSON），和分析结论完全分开
+        body = A.buildRawExport(currentReport, {
+          appVersion: appVersion,
+          fields: exportFields(),
+          strFilter: cfgState.strfilter || []
+        });
+        mime = 'application/json;charset=utf-8';
+        ext = '.json';
+      } else {
+        body = A.renderEnglish(currentReport, { maxClasses: 40, maxNodes: 40, maxEdges: 60 });
+        mime = 'text/markdown;charset=utf-8';
+        ext = '.md';
+      }
+      var blob = new Blob([body], { type: mime });
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a');
       a.href = url;
       a.download = 'mod-audit-' +
         String(currentReport.mcVersion || 'report').replace(/[^\w.-]+/g, '_') +
-        (lite ? '-lite' : '-full') + '.md';
+        (lite ? '-lite' : '-raw') + ext;
       document.body.appendChild(a);
       a.click();
       setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 500);
     }
+    /* ---------------- 设置面板 ---------------- */
+    var CFG_KEY = 'modaudit.cfg';
+    function loadCfg() { try { return JSON.parse(localStorage.getItem(CFG_KEY) || '{}'); } catch (e) { return {}; } }
+    var cfgState = loadCfg();
+    function saveCfg() { try { localStorage.setItem(CFG_KEY, JSON.stringify(cfgState)); } catch (e) { } }
+
+    function exportFields() {
+      return {
+        base: cfgState['exp.base'] !== false,
+        deps: cfgState['exp.deps'] !== false,
+        injections: cfgState['exp.injections'] !== false,
+        desc: cfgState['exp.desc'] === true,
+        code: cfgState['exp.code'] === true,
+        consts: cfgState['exp.consts'] === true
+      };
+    }
+
+    function validateStrFilter() {
+      var ta = document.getElementById('cfg-strfilter');
+      var errBox = document.getElementById('cfg-strfilter-err');
+      if (!ta || !errBox) return [];
+      var bad = [], good = [];
+      ta.value.split('\n').forEach(function (line) {
+        var s = line.trim();
+        if (!s) return;
+        try { new RegExp(s); good.push(s); } catch (e) { bad.push(s); }
+      });
+      errBox.textContent = bad.length ? ('非法正则（已忽略）：' + bad.join('  ')) : '';
+      cfgState.strfilter = good;
+      return good;
+    }
+
+    function applyCfgToUI() {
+      document.querySelectorAll('[data-cfg]').forEach(function (el) {
+        var k = el.getAttribute('data-cfg');
+        el.checked = cfgState[k] !== undefined ? !!cfgState[k] : el.defaultChecked;
+      });
+      var ta = document.getElementById('cfg-strfilter');
+      if (ta) ta.value = (cfgState.strfilter || []).join('\n');
+      var ts = document.getElementById('cfg-strskip');
+      if (ts) ts.value = (cfgState.strSkip || (window.A && A.DEFAULT_STR_SKIP) || []).join('\n');
+      ['glow', 'stroke', 'edge'].forEach(function (k) {
+        var el = document.getElementById('cfg-' + k);
+        if (el && cfgState['style.' + k] != null) el.value = cfgState['style.' + k];
+      });
+      validateStrFilter();
+    }
+
+    var cfgEl = document.getElementById('cfg');
+    function openCfg() {
+      if (!cfgEl) return;
+      applyCfgToUI();
+      cfgEl.classList.remove('closing');
+      cfgEl.classList.add('on');
+    }
+    function closeCfg() {
+      if (!cfgEl || !cfgEl.classList.contains('on')) return;
+      // 退场顺序：最右的块先走（右侧先退、左侧后退）
+      var blocks = cfgEl.querySelectorAll('.cfg-block');
+      var n = blocks.length;
+      blocks.forEach(function (b, i) { b.style.setProperty('--r', String(n - 1 - i)); });
+      cfgEl.classList.add('closing');
+      setTimeout(function () {
+        cfgEl.classList.remove('on');
+        cfgEl.classList.remove('closing');
+      }, 380);
+    }
+    var btnCfg = document.getElementById('btn-cfg');
+    if (btnCfg) btnCfg.addEventListener('click', openCfg);
+    var cfgClose = document.getElementById('cfg-close');
+    if (cfgClose) cfgClose.addEventListener('click', closeCfg);
+    if (cfgEl) {
+      cfgEl.addEventListener('click', function (ev) { if (ev.target.id === 'cfg') closeCfg(); });
+      cfgEl.querySelectorAll('[data-cfg]').forEach(function (el) {
+        el.addEventListener('change', function () {
+          cfgState[el.getAttribute('data-cfg')] = el.checked;
+          saveCfg();
+        });
+      });
+      var ta = document.getElementById('cfg-strfilter');
+      if (ta) ta.addEventListener('input', function () { validateStrFilter(); saveCfg(); });
+      var ts = document.getElementById('cfg-strskip');
+      if (ts) ts.addEventListener('input', function () {
+        var good = [], bad = [];
+        ts.value.split('\n').forEach(function (line) {
+          var s = line.trim(); if (!s) return;
+          try { new RegExp(s); good.push(s); } catch (e) { bad.push(s); }
+        });
+        var err = document.getElementById('cfg-strskip-err');
+        if (err) err.textContent = bad.length ? ('非法正则（已忽略）：' + bad.join('  ')) : '';
+        cfgState.strSkip = good;
+        A.setStringFilters({ skip: good });
+        saveCfg();
+      });
+      ['glow', 'stroke', 'edge'].forEach(function (k) {
+        var el = document.getElementById('cfg-' + k);
+        if (el) el.addEventListener('input', function () { cfgState['style.' + k] = +el.value; saveCfg(); });
+      });
+    }
+
     $('#btn-export-lite').addEventListener('click', function () { doExport(true); });
     $('#btn-export').addEventListener('click', function () { doExport(false); });
     $('#sheet-close').addEventListener('click', function () {
@@ -3149,6 +3455,9 @@ function modSupportsMc(mod, mcVersion) {
         return Promise.resolve();
       }
       isLoading = true;
+      var token = ++loadToken;
+      if (activeWorker) { try { activeWorker.terminate(); } catch (e) { } activeWorker = null; }
+      if (A.setStringFilters) A.setStringFilters({ skip: cfgState.strSkip });   // 作废上一次仍在跑的加载
 
       // 同一个目录重复拖入 → 什么都不做
       var signature = picked.jars.map(function (j) { return j.path; }).sort().join('|');
@@ -3203,24 +3512,65 @@ function modSupportsMc(mod, mcVersion) {
         syncCam();
         graph._camHold = 0;
 
-        return A.collect({
-          instance: inst,
-          jars: picked.jars.map(function (j) {
-            return {
-              name: j.path,
-              getBytes: function () {
-                return j.file.arrayBuffer().then(function (b) { return new Uint8Array(b); });
-              }
-            };
-          })
-        }, {
-          onProgress: function (i, n, name) {
-            setProgress(i, n);
-            setStatus('分析中 ' + i + '/' + n + ' · ' + (name.length > 34 ? name.slice(0, 33) + '…' : name));
-          },
-          onMod: function (mod) { if (mod) graph.addMod(mod); }
+        // 优先走 Worker：分析全部在后台线程，主线程只画图。
+        // file:// 下 Chromium 不允许建 Worker，此时自动退回主线程（网页版双击打开）。
+        lastFiles = picked.jars.map(function (j) {
+          return { name: j.file.name, file: j.file, paths: j.paths };
+        });
+        return new Promise(function (resolve, reject) {
+          var w = null;
+          var canWorker = (typeof Worker !== "undefined") && location.protocol !== "file:";
+          if (canWorker) { try { w = new Worker("worker.js"); } catch (e) { w = null; } }
+          if (!w) {
+            resolve(A.collect({
+              instance: inst,
+              jars: picked.jars.map(function (j) {
+                return {
+                  name: j.path,
+                  getBytes: function () {
+                    return j.file.arrayBuffer().then(function (b) { return new Uint8Array(b); });
+                  }
+                };
+              })
+            }, {
+              onProgress: function (i, n, name) {
+                if (token !== loadToken) throw new Error("__superseded__");
+                setProgress(i, n);
+                setStatus("分析中 " + i + "/" + n + " · " + (name.length > 34 ? name.slice(0, 33) + "…" : name));
+              },
+              onMod: function (mod) { if (mod && token === loadToken) graph.addMod(mod); }
+            }));
+            return;
+          }
+          if (activeWorker) { try { activeWorker.terminate(); } catch (e) { } }
+          activeWorker = w;
+          w.onmessage = function (ev) {
+            if (token !== loadToken) { try { w.terminate(); } catch (e) { } return; }
+            var m = ev.data || {};
+            if (m.type === "progress") {
+              setProgress(m.i, m.n);
+              setStatus("分析中 " + m.i + "/" + m.n + " · " + (m.name && m.name.length > 34 ? m.name.slice(0, 33) + "…" : (m.name || "")));
+            } else if (m.type === "mod") {
+              if (m.mod) graph.addMod(m.mod);
+            } else if (m.type === "done") {
+              try { w.terminate(); } catch (e) { }
+              if (activeWorker === w) activeWorker = null;
+              resolve({ mods: m.mods, errors: m.errors, instance: m.instance });
+            } else if (m.type === "error") {
+              try { w.terminate(); } catch (e) { }
+              if (activeWorker === w) activeWorker = null;
+              reject(new Error(m.message || "worker error"));
+            }
+          };
+          w.onerror = function (e) {
+            try { w.terminate(); } catch (e2) { }
+            if (activeWorker === w) activeWorker = null;
+            reject(new Error((e && e.message) || "worker 启动失败"));
+          };
+          w.postMessage({ type: "start", files: lastFiles, instance: inst, strSkip: cfgState.strSkip || null });
         });
       }).then(function (res) {
+        if (token !== loadToken) return null;   // 已被新加载取代，丢弃结果
         setStatus('汇总中…');
         var report = A.summarize(res.mods, res.errors, instance);
         currentReport = report;
@@ -3256,9 +3606,11 @@ function modSupportsMc(mod, mcVersion) {
         isLoading = false;
         return report;
       }).catch(function (e) {
-        isLoading = false;
-        setStatus('出错：' + ((e && e.message) || e));
-        throw e;
+        if (!(e && e.message === '__superseded__')) {
+          isLoading = false;
+          setStatus('出错：' + ((e && e.message) || e));
+        }
+        return null;
       });
     };
   });

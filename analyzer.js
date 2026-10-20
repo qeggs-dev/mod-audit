@@ -120,6 +120,18 @@
       }
     }
 
+    // 常量池里的字符串常量：跳过描述符 / 类型名这类噪声，其余原样保留（每类限量）。
+    // 用途：搜索（str: 领域）与原始数据导出。
+    const consts = [];
+    for (let ci = 1; ci < cpCount && consts.length < 200; ci++) {
+      const e = cp[ci];
+      if (!e || e.tag !== 1 || typeof e.s !== 'string') continue;
+      const sv = e.s;
+      if (sv.length < 4 || sv.length > 120) continue;
+      // 具体过滤规则在收集阶段按「设置」里的正则列表应用（见 STR_SKIP / setStringFilters）
+      consts.push(sv);
+    }
+
     const utf8Of = (i) => (cp[i] && cp[i].tag === 1 ? cp[i].s : null);
     const classNameOf = (i) => (cp[i] && cp[i].tag === 7 ? utf8Of(cp[i].idx) : null);
 
@@ -202,7 +214,7 @@
       p = start + len;
     }
 
-    return { name: thisClass, interfaces, methods, fields, annotations: classAnns };
+    return { name: thisClass, interfaces, methods, fields, annotations: classAnns, consts: consts };
   }
 
   function descToClassName(desc) {
@@ -767,6 +779,31 @@
       else if (clientRefs && serverRefs) out.side = { value: 'both', source: '类引用（两侧都有）' };
       else out.side = { value: 'unknown', source: null };
     }
+
+    // 常量池字符串扫描：与 side 判定无关，单独跑一遍（每个 jar 限量 40 个类）。
+    // 结果用于搜索的 str: 领域与原始数据导出。
+    {
+      const cset = new Set();
+      let cScanned = 0;
+      for (const p of zip.entries.keys()) {
+        if (!/\.class$/.test(p)) continue;
+        if (cScanned >= 40) break;
+        cScanned++;
+        try {
+          const pc = parseClass(await zip.read(p));
+          if (pc && pc.consts) {
+            for (const c of pc.consts) {
+              let skip = false;
+              for (let i2 = 0; i2 < STR_SKIP.length; i2++) { if (STR_SKIP[i2].test(c)) { skip = true; break; } }
+              if (!skip) cset.add(c);
+            }
+          }
+        } catch (e) { }
+      }
+      out.constStrings = Array.from(cset).slice(0, 300);
+      out.constTotal = cset.size;
+    }
+
     return out;
   }
 
@@ -784,6 +821,126 @@
   /* =====================================================================
    * 6. 单个 jar 的分析（含嵌套 jar 的 modId 收集）
    * ===================================================================== */
+  /* 常量字符串的默认排除规则（每行一个正则）。可在设置里覆盖。
+     默认值针对「常量池里哪些串算不上有效信息」：描述符、类名、泛型签名、孤立单词。 */
+  const DEFAULT_STR_SKIP = [
+    '^[\(\[]',
+    '^L.*;$',
+    '^[\\w/$]+$',
+    '^<',
+    '^[^\\s:/\\\\.%$§-]+$'
+  ];
+  let STR_SKIP = DEFAULT_STR_SKIP.map(function (p) { return new RegExp(p); });
+
+  /** 设置常量字符串的过滤规则（传入正则字符串数组；非法项忽略） */
+  function setStringFilters(opts) {
+    const list = (opts && Array.isArray(opts.skip)) ? opts.skip : null;
+    if (!list) { STR_SKIP = DEFAULT_STR_SKIP.map(function (p) { return new RegExp(p); }); return; }
+    const regs = [];
+    list.forEach(function (p) {
+      if (typeof p !== 'string' || !p.trim()) return;
+      try { regs.push(new RegExp(p)); } catch (e) { }
+    });
+    STR_SKIP = regs;
+  }
+  /* 解析器版本：改「怎么读 jar」时加这个号，与软件版本独立。 */
+  const PARSER_VERSION = '1.0.0';
+
+  /* 原始数据导出（全量档）：只含本软件能拿到的原始记录，
+     不含关系/严重度/判定。mods 以 modId 为键。 */
+  function buildRawExport(report, meta) {
+    const mods = (report && report.mods) || [];
+    const inst = (report && report.instance) || null;
+    const dict = {};
+    const fieldsOpt = (meta && meta.fields) || null;   // 提前取，字典构建时要用
+    let injTotal = 0;
+    mods.forEach(function (m) {
+      const primary = (m.ids && m.ids[0] && m.ids[0].id) || m.file || ('jar' + Object.keys(dict).length);
+      let key = primary, n = 1;
+      while (Object.prototype.hasOwnProperty.call(dict, key)) key = primary + '#' + (++n);
+      const inj = (m.targets || []).map(function (t) {
+        injTotal++;
+        return {
+          file: m.file || null,
+          cls: t.cls || null, method: t.method || null, desc: t.desc || null,
+          kind: t.kind || null, mixin: t.mixin || null, config: t.config || null,
+          atValue: t.atValue || null, atTarget: t.atTarget || null,
+          atOrdinal: t.atOrdinal == null ? null : t.atOrdinal,
+          priority: t.priority == null ? null : t.priority,
+          require: t.require == null ? null : t.require,
+          cancellable: t.cancellable == null ? null : t.cancellable
+        };
+      });
+      dict[key] = {
+        file: m.file || null,
+        jarSize: m.jarSize == null ? null : m.jarSize,
+        loaders: m.loaders || [],
+        ids: m.ids || [],
+        provides: m.provides || [],
+        mcRange: m.mcRange || null,
+        depends: m.depends || {},
+        forgeDeps: m.forgeDeps || [],
+        forgeIncompatible: m.forgeIncompatible || [],
+        side: m.side || null,
+        loaderOrder: m.loaderOrder || null,
+        jarVersion: m.jarVersion || null,
+        mixins: m.mixinsDecl || [],
+        injections: inj,
+        constants: (function () {
+          if (!(fieldsOpt && fieldsOpt.consts === true)) return undefined;
+          var items = m.constStrings || [];
+          var regs = [];
+          ((meta && meta.strFilter) || []).forEach(function (p) {
+            try { regs.push(new RegExp(p)); } catch (e) { }
+          });
+          if (regs.length) {
+            items = items.filter(function (x) {
+              return !regs.some(function (r) { return r.test(x); });
+            });
+          }
+          return { total: m.constTotal || 0, shown: items.length, items: items };
+        })(),
+        desc: m.desc || null,
+        javaMajor: m.javaMajor == null ? null : m.javaMajor,
+        codeBytes: (m.code && m.code.bytes) == null ? null : m.code.bytes
+      };
+    });
+    // 按设置里的勾选裁剪字段（settings 面板 -> 导出过滤）
+    const f = (meta && meta.fields) || null;
+    if (f) {
+      for (const k of Object.keys(dict)) {
+        const e = dict[k];
+        if (f.base === false) { delete e.file; delete e.jarSize; delete e.loaders; delete e.ids; }
+        if (f.deps === false) { delete e.mcRange; delete e.depends; delete e.forgeDeps; delete e.forgeIncompatible; delete e.provides; }
+        if (f.injections === false) { delete e.injections; }
+        if (f.desc === false) { delete e.desc; }
+        if (f.code === false) { delete e.codeBytes; delete e.javaMajor; }
+      }
+    }
+
+    const out = {
+      generator: {
+        app: 'mod-audit',
+        appVersion: (meta && meta.appVersion) || null,
+        parserVersion: PARSER_VERSION,
+        format: 'raw-dump',
+        formatVersion: 1,
+        exportedAt: new Date().toISOString(),
+        note: 'raw records only; no relations, severities, or verdicts'
+      },
+      instance: inst ? {
+        id: inst.id || null, loader: inst.loader || null,
+        loaderVersion: inst.loaderVersion || null,
+        mcVersion: inst.mcVersion || null, mcSource: inst.mcSource || null,
+        javaMajor: inst.javaMajor == null ? null : inst.javaMajor,
+        assetIndex: inst.assetIndex || null, mainClass: inst.mainClass || null,
+        libraryCount: inst.libraryCount == null ? null : inst.libraryCount
+      } : null,
+      counts: { jars: mods.length, injectionPoints: injTotal },
+      mods: dict
+    };
+    return JSON.stringify(out);
+  }
   async function analyzeJar(name, bytes) {
     const mod = {
       file: name,
@@ -845,6 +1002,8 @@
     mod.ids = meta.ids;
     mod.mcRange = meta.mcRange;
     mod.side = meta.side || { value: 'unknown', source: null };
+    mod.constStrings = meta.constStrings || [];
+    mod.constTotal = meta.constTotal || 0;
     mod.forgeDeps = meta.forgeDeps || [];
     mod.forgeIncompatible = meta.forgeIncompatible || [];
     mod.depends = meta.depends || {};
@@ -1674,6 +1833,12 @@
     normAt,
     renderText,
     renderEnglish,
+    setStringFilters,
+    DEFAULT_STR_SKIP,
+    unzip,
+    parseClass,
+    buildRawExport,
+    PARSER_VERSION,
     parseClass,
     parseToml,
     parseManifest,

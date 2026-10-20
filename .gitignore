@@ -8,6 +8,13 @@ research/
 desktop/
 scripts/
 
+# 只发布 app 本体，开发/排障工具不进仓库
+cli.js
+debug.js
+layout-probe.js
+smoke.js
+
+
 # 系统垃圾
 *.log
 Thumbs.db
