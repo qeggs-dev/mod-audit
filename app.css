@@ -1054,7 +1054,7 @@ details.group[open] > summary::before { content: '▾ '; }
 .cfg-check { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; color: var(--fg-dim, #b9c0cf); cursor: pointer; }
 .cfg-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; padding: 4px 0; color: var(--fg-dim, #b9c0cf); }
 .cfg-row input[type=range] { width: 190px; }
-#cfg-strfilter {
+#cfg-strfilter, #cfg-strskip {
   width: 100%; min-height: 78px; resize: vertical; box-sizing: border-box;
   background: rgba(10,13,19,.9); color: var(--fg, #e6e9f0); border: 1px solid rgba(255,255,255,.1);
   border-radius: 8px; padding: 8px 10px; font-family: var(--mono, monospace); font-size: 11.5px; line-height: 1.6;

@@ -2868,7 +2868,7 @@ function modSupportsMc(mod, mcVersion) {
   var dirPath = null;          // 已加载目录的真实路径（Electron 才拿得到）
   var dirName = '';
   var lastSignature = '';      // 用来判断「又拖了同一个目录」
-  var appVersion = '0.21.0';    // 浏览器版兜底；桌面版以 preload 返回值为准
+  var appVersion = '0.21.1';    // 浏览器版兜底；桌面版以 preload 返回值为准
 
   function applyTitle(name) {
     document.title = (name ? name + ' · ' : '') + 'mod-audit v' + appVersion;
@@ -3306,7 +3306,7 @@ function modSupportsMc(mod, mcVersion) {
       var ta = document.getElementById('cfg-strfilter');
       if (ta) ta.value = (cfgState.strfilter || []).join('\n');
       var ts = document.getElementById('cfg-strskip');
-      if (ts) ts.value = (cfgState.strSkip || (window.A && A.DEFAULT_STR_SKIP) || []).join('\n');
+      if (ts) ts.value = (cfgState.strSkip || (A.DEFAULT_STR_SKIP || [])).join('\n');
       ['glow', 'stroke', 'edge'].forEach(function (k) {
         var el = document.getElementById('cfg-' + k);
         if (el && cfgState['style.' + k] != null) el.value = cfgState['style.' + k];
