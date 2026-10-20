@@ -1782,19 +1782,22 @@
     });
 
     L.push('## summary');
-    L.push([4, 3, 2, 1].map(s => 'L' + s + '=' + ((bySev[s] || []).length)).join(' '));
+    // 概要写成一句话，而不是表格：低能力模型读表格容易把分隔符读串
+    L.push('The analyzer found ' + ((bySev[4] || []).length) + ' high-risk item(s), ' +
+      ((bySev[3] || []).length) + ' likely-failure item(s), ' +
+      ((bySev[2] || []).length) + ' possibly-skipped item(s), and ' +
+      ((bySev[1] || []).length) + ' hint(s).');
     L.push('');
 
     [4, 3, 2, 1].forEach(s => {
       const list = bySev[s];
       if (!list || !list.length) return;
       L.push('## L' + s + ' (' + list.length + ') — ' + SEV_EN[s]);
-      L.push('| kind | where | mods |');
-      L.push('|---|---|---|');
+      // 每条一行自然语言；刻意不用 markdown 表格
       list.forEach(it => {
         const kind = KIND_EN[it.kind] || it.kind;
-        L.push('| ' + kind + ' | ' + String(shortTarget(it)).replace(/\|/g, '/') +
-          ' | ' + shortMods(it) + ' |');
+        L.push('- ' + kind + '. Involves: ' + shortMods(it) +
+          '. Location: ' + String(shortTarget(it)).replace(/\|/g, '/') + '.');
       });
       L.push('');
     });

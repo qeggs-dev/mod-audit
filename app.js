@@ -105,7 +105,8 @@
     return max >= 2 ? 1 : 0;
   }
 
-  /* 严重度梯队：4 起不来 / 3 很可能失败 / 2 可能被跳过 / 1 静态提示 / 0 无 */
+  /* 严重度梯队：4 高风险 / 3 可能失败 / 2 可能被跳过 / 1 静态提示 / 0 无
+   措辞统一成「分析器的立场」，不下结论 */
   var SEV_COLOR = {
     4: '255,92,92',    // 红
     3: '255,159,69',   // 橙
@@ -137,10 +138,11 @@
   }
 
   var FOCUS_LABEL = {
-    r4: '可能起不来',
-    r3: '很可能失败',
+    // 与图例保持一致的措辞
+    r4: '可能有高风险',
+    r3: '可能失败',
     r2: '可能被跳过',
-    r1: '静态上可共存',
+    r1: '静态上可共存（已不连线）',
     dep: '前置依赖'
   };
   var LOADER_LABEL = { fabric: 'Fabric', neoforge: 'NeoForge', forge: 'Forge', multi: '多加载器', unknown: '未知' };
@@ -176,7 +178,7 @@
     this.look = { glow: 14, rim: 1.5, edge: 1 };
     this.edgeFocus = new Set();    // 图例多选：r4/r3/r2/r1/dep
     this.loaderFocus = new Set();  // 标题条颜色多选
-    this.critFocus = false;        // 高危高亮模式
+    this.critFocus = false;        // 高风险高亮模式
     this.critT = 0;                // 高亮强度（0..1，每帧向 critTarget 逼近 → 先快后慢）
     this.searchQuery = '';         // 搜索关键字
     this._match = null;            // 命中的节点索引集合；null = 没在搜索
@@ -793,7 +795,7 @@
       if (ep < 0) ep = 0;
       if (ep < 1) alpha *= (1 - Math.pow(1 - ep, 2.4));
 
-      // 高危高亮时连线一起收：不沾高危节点的线也淡下去，跟着 critT 缓动
+      // 高风险高亮时连线一起收：不沾高风险节点的线也淡下去，跟着 critT 缓动
       if (critT > 0.01) {
         var ca = N[e.a], cb = N[e.b];
         var touchesCrit = (ca && ca.sev >= 3) || (cb && cb.sev >= 3);
@@ -864,8 +866,10 @@
         var srcN = (e.a === sel) ? a : b;
         var dstN = (e.a === sel) ? b : a;
         var dstIdx = (e.a === sel) ? e.b : e.a;
-        var sp = (now - e._hotT0) / 520;
-        var spc = sp < 0 ? 0 : (sp > 1 ? 1 : sp);
+        // 先慢后快：t^3 起步平缓、末段加速，到 1 时急停（蒙版正好收缩到终点）
+        var spRaw = (now - e._hotT0) / 520;
+        var spT = spRaw < 0 ? 0 : (spRaw > 1 ? 1 : spRaw);
+        var spc = spT * spT * spT;
 
         if (!e._hitFired) {
           // 蒙版：一层压暗膜覆盖「当前位置 → 终点」这一段（初始覆盖整条），
@@ -980,7 +984,7 @@
         var ownL = loaderT[loaderKeyOf(nd.mod && nd.mod.loaders)] || 0;
         alpha *= 1 - lStrength * 0.93 * (1 - ownL);
       }
-      // 高危高亮：只留 sev>=3 的节点。只看 critT、不看开关状态——
+      // 高风险高亮：只留 sev>=3 的节点。只看 critT、不看开关状态——
       // 否则关掉那一刻 crit 变 false，遮罩立刻失效，淡出就被跳过了。
       if (critT > 0.01 && !nd.isRoot && !isSel && !isHov && nd.sev < 3) {
         alpha *= (1 - critT * 0.93);
@@ -1277,7 +1281,7 @@
         self.panStart = { x: ev.clientX, y: ev.clientY, px: self.pan.x, py: self.pan.y };
         c.classList.add('grabbing');
         self.select(-1);
-        // 点击空白处关闭「高危高亮」
+        // 点击空白处关闭「高风险高亮」
         if (self.critFocus) {
           self.critFocus = false;
           if (self.onFilterClear) self.onFilterClear();
@@ -1440,7 +1444,7 @@
     var tags = [];
     g.edgeFocus.forEach(function (k) { tags.push(FOCUS_LABEL[k] || k); });
     g.loaderFocus.forEach(function (k) { tags.push(LOADER_LABEL[k] || k); });
-    if (g.critFocus) tags.push('高危');
+    if (g.critFocus) tags.push('高风险');
     hintEl.textContent = '已绘制 ' + g._drawn + ' / ' + total + ' 个节点 · 缩放 ' +
       g.zoom.toFixed(2) + (tags.length ? ' · 筛选：' + tags.join(' / ') : '') +
       ' · 拖拽移动 · 滚轮缩放';
@@ -1470,9 +1474,9 @@
       '</div>' +
       '<div class="section-title">连线（可多选，再次点击取消）</div>' +
       '<div class="legend">' +
-      legendLine('255,92,92', '红 · 可能直接起不来：缺依赖 / 重复安装 / 加载器不匹配 / 声明不兼容', 'r4') +
-      legendLine('255,159,69', '橙 · 很可能失败：抢同一条指令', 'r3') +
-      legendLine('255,209,102', '黄 · 可能被跳过或被覆盖：@Overwrite 重叠', 'r2') +
+      legendLine('255,92,92', '红 · 分析器认为可能有高风险的特征', 'r4') +
+      legendLine('255,159,69', '橙 · 分析器认为可能失败的特征', 'r3') +
+      legendLine('255,209,102', '黄 · 分析器认为可能被跳过的特征', 'r2') +
       legendLine('70,211,154', '绿虚线 + 箭头 · 前置依赖（箭头指向被依赖方）', 'dep') +
       '</div>' +
       '<div class="section-title">标签颜色（可多选）</div>' +
@@ -1588,7 +1592,7 @@
       stat('mod', stats.jars || 0) +
       stat('注入点', stats.targets || 0) +
       stat('类', stats.classes || 0) +
-      stat('高危', counts.high || 0) +
+      stat('高风险', counts.high || 0) +
       '</div>';
 
     // 版本 json 里读到的其它元信息
@@ -2717,7 +2721,7 @@ function modSupportsMc(mod, mcVersion) {
     var body = document.getElementById('sheet-body');
     if (!report) { body.innerHTML = '<div class="empty">还没有结果。</div>'; return; }
     var html = '';
-    [['high', '高危'], ['med', '需要注意'], ['low', '提示']].forEach(function (pair) {
+    [['high', '高风险'], ['med', '需留意'], ['low', '提示']].forEach(function (pair) {
       var list = report.issues.filter(function (i) { return i.level === pair[0]; });
       if (!list.length) return;
       html += '<h3 style="font-size:12px;color:var(--fg-mute);letter-spacing:.1em;margin:16px 0 8px">' +
@@ -2868,7 +2872,7 @@ function modSupportsMc(mod, mcVersion) {
   var dirPath = null;          // 已加载目录的真实路径（Electron 才拿得到）
   var dirName = '';
   var lastSignature = '';      // 用来判断「又拖了同一个目录」
-  var appVersion = '0.21.1';    // 浏览器版兜底；桌面版以 preload 返回值为准
+  var appVersion = '0.21.6';    // 浏览器版兜底；桌面版以 preload 返回值为准
 
   function applyTitle(name) {
     document.title = (name ? name + ' · ' : '') + 'mod-audit v' + appVersion;
@@ -3216,7 +3220,7 @@ function modSupportsMc(mod, mcVersion) {
       applyTitle('');
       if (chipMods) chipMods.textContent = '— mod';
       if (chipInj) chipInj.textContent = '— 注入点';
-      if (chipCrit) { chipCrit.textContent = '— 高危'; chipCrit.classList.remove('on'); }
+      if (chipCrit) { chipCrit.textContent = '— 高风险'; chipCrit.classList.remove('on'); }
       instChip.textContent = '等待拖入';
       setStatus('');
       progressEl.classList.remove('on');
@@ -3583,7 +3587,7 @@ function modSupportsMc(mod, mcVersion) {
         if (chipMods) {
           chipMods.innerHTML = '<b>' + report.stats.jars + '</b> mod';
           chipInj.innerHTML = '<b>' + report.stats.targets + '</b> 注入点';
-          chipCrit.innerHTML = '<b style="color:var(--danger)">' + counts.high + '</b> 高危';
+          chipCrit.innerHTML = '<b style="color:var(--danger)">' + counts.high + '</b> 高风险';
         }
         window.__lastReport = report;
         setStatus('');
