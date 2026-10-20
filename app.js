@@ -161,6 +161,7 @@
     this.zoom = 1;
     this.pan = { x: 0, y: 0 };
     this.selected = -1;
+    this.selEdge = null;   // 被点中的连线（与节点选择互斥）
     this.hovered = -1;
     this.drag = null;
     this.panStart = null;
@@ -216,6 +217,7 @@
     this.byId = new Map();
     this.depQueue = [];
     this.selected = -1;
+    this.selEdge = null;   // 被点中的连线（与节点选择互斥）
     this.hovered = -1;
     this.drag = null;
     this.panStart = null;
@@ -730,6 +732,22 @@
     /* 先把每个节点的有效不透明度算出来，连线要用：
        两端只要有一个被压暗，线就跟着压暗（取较小值）。 */
     var nbrPre = this._neighbors(sel);
+
+    // 图例筛选（只看某类连线）时，节点也要跟着收：
+    // 先算出「被选中类型涉及到的节点」，其余节点压暗。
+    var kindNodes = null;
+    if (eStrength > 0.004) {
+      kindNodes = new Set();
+      this.edges.forEach(function (e2) {
+        var on = (edgeT[edgeKindOf(e2)] || 0) >= 0.5;
+        if (!on) return;
+        if (e2.a != null) kindNodes.add(e2.a);
+        if (e2.b != null) kindNodes.add(e2.b);
+      });
+    }
+    var selEdge = this.selEdge;
+    var edgePts = null;
+    if (selEdge) { edgePts = new Set([selEdge.a, selEdge.b]); }
     var nodeDim = new Array(N.length);
     for (var di = 0; di < N.length; di++) {
       var dn = N[di];
@@ -743,6 +761,12 @@
         da *= 1 - lStrength * 0.93 * (1 - oL);
       }
       if (critT > 0.01 && !dn.isRoot && !dSel && !dHov && dn.sev < 3) da *= (1 - critT * 0.93);
+      // 图例筛选：与选中类型无关的节点压暗
+      if (kindNodes && !dn.isRoot && !kindNodes.has(di) && !dHov) {
+        da *= 1 - eStrength * 0.85;
+      }
+      // 选中连线时：不在两端上的节点一起压暗
+      if (edgePts && !dn.isRoot && !edgePts.has(di) && !dHov) da *= 0.28;
       nodeDim[di] = da;
     }
 
@@ -802,6 +826,11 @@
         if (!touchesCrit) alpha *= (1 - critT * 0.93);
       }
 
+      // 选中某条连线时：不沾这两端的一律压暗，选中的那条加亮加粗
+      var isSelEdge = (selEdge === e);
+      var touchesEdge = edgePts && edgePts.has(e.a) && edgePts.has(e.b);
+      if (selEdge && !isSelEdge && !touchesEdge) alpha *= 0.12;
+
       // 端点被压暗时，线跟着压暗（两端取较小值）
       var dA = nodeDim[e.a], dB = nodeDim[e.b];
       if (dA != null && dB != null) alpha *= Math.min(dA, dB);
@@ -837,6 +866,7 @@
         e._hitFired = false;
       }
 
+      if (isSelEdge) { alpha = Math.min(1, alpha * 1.6 + 0.3); width += 1.6; }
       ctx.strokeStyle = 'rgba(' + rgb + ',' + alpha + ')';
       ctx.lineWidth = Math.max(0.55, width * look.edge) * invZoom;
 
@@ -1236,6 +1266,26 @@
     return -1;
   };
 
+    /* 连线拾取：点到线段的距离在屏幕 8px 内即命中（根边太密，不参与） */
+    Graph.prototype._hitEdge = function (w) {
+      var best = null, bestD = 8 / this.zoom, self = this;
+      this.edges.forEach(function (e) {
+        if (e.type === 'root') return;
+        var a = self.nodes[e.a], b = self.nodes[e.b];
+        if (!a || !b) return;
+        var dx = b.x - a.x, dy = b.y - a.y;
+        var len2 = dx * dx + dy * dy;
+        if (!len2) return;
+        var tt = ((w.x - a.x) * dx + (w.y - a.y) * dy) / len2;
+        tt = tt < 0 ? 0 : (tt > 1 ? 1 : tt);
+        var px = a.x + dx * tt, py = a.y + dy * tt;
+        var ddx = w.x - px, ddy = w.y - py;
+        var d = Math.sqrt(ddx * ddx + ddy * ddy);
+        if (d < bestD) { bestD = d; best = e; }
+      });
+      return best;
+    };
+
   Graph.prototype.select = function (i) {
     if (this.selected === i) return;
     this.selected = i;
@@ -1278,6 +1328,15 @@
         }
         c.classList.add('grabbing');
       } else {
+          // 没点到卡片：先看是不是点到了某条连线
+          var ehit = self._hitEdge(w);
+          if (ehit) {
+            self.select(-1);
+            self.selEdge = ehit;
+            if (self.onSelect) self.onSelect(null);
+            return;
+          }
+          self.selEdge = null;
         self.panStart = { x: ev.clientX, y: ev.clientY, px: self.pan.x, py: self.pan.y };
         c.classList.add('grabbing');
         self.select(-1);
@@ -2002,9 +2061,9 @@
     if (back) back.style.display = 'none';
     document.getElementById('inj-detail').innerHTML = '<div class="empty">选择左侧任意一条查看详情</div>';
 
-    // 从侧边栏的类型标签进来时，预填过滤条件
+    // 从侧边栏的类型标签进来时预填筛选类型；从右键菜单进来时预填搜索词
     var q = document.getElementById('inj-q');
-    if (q) q.value = (opts && opts.kind) ? opts.kind : '';
+    if (q) q.value = (opts && opts.q) ? opts.q : ((opts && opts.kind) ? opts.kind : '');
 
     // 恢复滚动（关闭时被临时关掉，避免滚动条在淡出中闪一帧）
     var listBox = document.getElementById('inj-list');
@@ -2093,6 +2152,36 @@
     hideCtx();
   }
 
+  // 按领域搜索：把当前字符串填进对应面板的搜索框并打开面板
+  function ctxSearchDomain(kind) {
+    hideCtx();
+    if (kind === 'inj') {
+      // 搜索词要交给 openInjectionPanel 填：它内部会把 #inj-q 重置，先填会被覆盖
+      if (typeof openInjectionPanel === 'function') {
+        openInjectionPanel({ q: ctxText });
+      } else {
+        var injQ = document.getElementById('inj-q');
+        if (injQ) {
+          injQ.value = ctxText;
+          injQ.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        var tool = document.getElementById('tool');
+        if (tool) tool.classList.add('on');
+      }
+    } else if (kind === 'const') {
+      var cstQ = document.getElementById('cst-q');
+      if (cstQ) {
+        cstQ.value = ctxText;
+        cstQ.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      if (window.__openConsts) window.__openConsts();
+      else {
+        var cst = document.getElementById('cst');
+        if (cst) cst.classList.add('on');
+      }
+    }
+  }
+
   function bindContextMenu() {
     var m = ctxEl();
     if (!m) return;
@@ -2108,6 +2197,8 @@
     m.addEventListener('click', function (ev) {
       var act = ev.target && ev.target.getAttribute('data-act');
       if (act === 'copy') ctxCopy();
+      else if (act === 'inj') ctxSearchDomain('inj');
+      else if (act === 'const') ctxSearchDomain('const');
       else if (act === 'search') ctxSearch();
     });
 
@@ -2872,11 +2963,22 @@ function modSupportsMc(mod, mcVersion) {
   var dirPath = null;          // 已加载目录的真实路径（Electron 才拿得到）
   var dirName = '';
   var lastSignature = '';      // 用来判断「又拖了同一个目录」
-  var appVersion = '0.21.7';    // 浏览器版兜底；桌面版以 preload 返回值为准
+  var appVersion = '0.28.1';    // 浏览器版兜底；桌面版以 preload 返回值为准
 
   function applyTitle(name) {
     document.title = (name ? name + ' · ' : '') + 'mod-audit v' + appVersion;
   }
+
+    /* 第二条进度条：常量池异步扫描 */
+    var progress2El = document.getElementById("progress2");
+    var progress2Bar = progress2El ? progress2El.querySelector("i") : null;
+    function setScanProgress(cur, total) {
+      if (!progress2El || !progress2Bar) return;
+      if (total <= 0) { progress2El.classList.remove("on"); return; }
+      progress2El.classList.add("on");
+      progress2Bar.style.width = Math.round((cur / total) * 100) + "%";
+    }
+
 
   function setProgress(cur, total) {
     if (!progressEl) return;
@@ -3220,6 +3322,15 @@ function modSupportsMc(mod, mcVersion) {
       applyTitle('');
       if (chipMods) chipMods.textContent = '— mod';
       if (chipInj) chipInj.textContent = '— 注入点';
+      // 重置时把常量 chip 也回到初始状态，否则会残留上一次的计数
+      var chipConstsReset = document.getElementById('chip-consts');
+      if (chipConstsReset) {
+        chipConstsReset.textContent = '— 常量';
+        chipConstsReset.classList.add('off');
+      }
+      constScanDone = false;
+      constScanSeen = 0;
+      constScanTotal = 0;
       if (chipCrit) { chipCrit.textContent = '— 高风险'; chipCrit.classList.remove('on'); }
       instChip.textContent = '等待拖入';
       setStatus('');
@@ -3436,6 +3547,19 @@ function modSupportsMc(mod, mcVersion) {
     document.addEventListener('keydown', function (ev) {
       if (ev.key === 'Escape') {
         hideCtx();
+        // 常量面板优先处理：详情 → 列表 → 关闭
+        var cstPanel = document.getElementById('cst');
+        if (cstPanel && cstPanel.classList.contains('on')) {
+          var cstSplit = document.getElementById('cst-body');
+          if (cstSplit && cstSplit.classList.contains('detail-open')) {
+            cstSplit.classList.remove('detail-open');
+            var cstBackBtn = document.getElementById('cst-back');
+            if (cstBackBtn) cstBackBtn.style.display = 'none';
+          } else if (typeof closeConsts === 'function') {
+            closeConsts();
+          }
+          return;
+        }
         // Esc 也走逐级回退：详情 → 列表 → 关闭
         var split = document.querySelector('.sheet-body.split');
         if (split && split.classList.contains('detail-open')) {
@@ -3541,8 +3665,9 @@ function modSupportsMc(mod, mcVersion) {
                 if (token !== loadToken) throw new Error("__superseded__");
                 setProgress(i, n);
                 setStatus("分析中 " + i + "/" + n + " · " + (name.length > 34 ? name.slice(0, 33) + "…" : name));
+                if (window.__setConstTotal) window.__setConstTotal(n);
               },
-              onMod: function (mod) { if (mod && token === loadToken) graph.addMod(mod); }
+              onMod: function (mod) { if (mod && token === loadToken) { graph.addMod(mod); if (window.__enqueueConst) window.__enqueueConst(mod); } }
             }));
             return;
           }
@@ -3554,11 +3679,40 @@ function modSupportsMc(mod, mcVersion) {
             if (m.type === "progress") {
               setProgress(m.i, m.n);
               setStatus("分析中 " + m.i + "/" + m.n + " · " + (m.name && m.name.length > 34 ? m.name.slice(0, 33) + "…" : (m.name || "")));
+              if (window.__setConstTotal) window.__setConstTotal(m.n);
             } else if (m.type === "mod") {
-              if (m.mod) graph.addMod(m.mod);
+              if (m.mod) {
+                // 立刻挂上 reopen（Worker 传来的对象里函数会被克隆丢弃），
+                // 这样这条 mod 一进列表就能并行开始常量扫描
+                try {
+                  var fhM = null;
+                  (lastFiles || []).forEach(function (f) { if (f.name === m.mod.file) fhM = f.file; });
+                  if (fhM && !m.mod.reopen) {
+                    m.mod.reopen = function () {
+                      return fhM.arrayBuffer().then(function (b) { return new Uint8Array(b); });
+                    };
+                  }
+                } catch (e) { }
+                graph.addMod(m.mod);
+                if (window.__enqueueConst) window.__enqueueConst(m.mod);
+              }
             } else if (m.type === "done") {
               try { w.terminate(); } catch (e) { }
               if (activeWorker === w) activeWorker = null;
+              // Worker 回传的对象里函数会被结构化克隆丢弃：按文件名把 reopen 补回来，
+              // 否则主线程的异步常量扫描会因为没有 reopen 而直接跳过。
+              try {
+                var byName = {};
+                (lastFiles || []).forEach(function (f) { byName[f.name] = f.file; });
+                (m.mods || []).forEach(function (mm) {
+                  var fh = byName[mm.file];
+                  if (fh && !mm.reopen) {
+                    mm.reopen = function () {
+                      return fh.arrayBuffer().then(function (b) { return new Uint8Array(b); });
+                    };
+                  }
+                });
+              } catch (e) { }
               resolve({ mods: m.mods, errors: m.errors, instance: m.instance });
             } else if (m.type === "error") {
               try { w.terminate(); } catch (e) { }
@@ -3592,11 +3746,56 @@ function modSupportsMc(mod, mcVersion) {
         window.__lastReport = report;
         setStatus('');
         setProgress(1, 1);
+
+        // 常量池扫描放到主线完成之后异步跑：不影响首屏，进度走第二条进度条
+        (function () {
+          // 常量扫描已经随主扫描并行跑过（enqueueConstScan），这里只等队列排空后收尾
+          if (constQueuedTotal > 0) {
+            (function waitDone() {
+              if (constActive > 0 || constQueue.length > 0) { setTimeout(waitDone, 120); return; }
+              constScanDone = true;
+              constScanSeen = constScanTotal;
+              setScanProgress(0, 0);
+              setStatus('');
+              try {
+                var totAll = ((report && report.mods) || []).reduce(function (n, m) { return n + (m.constTotal || 0); }, 0);
+                if (chipConsts) { chipConsts.classList.remove('off'); chipConsts.innerHTML = '<b>' + totAll + '</b> 常量'; }
+              } catch (e) { }
+            })();
+            return;
+          }
+          var mods = (report && report.mods) || [];
+          if (!mods.length || !A.scanConstants) return;
+          constScanDone = false;
+          constScanSeen = 0;
+          constScanTotal = mods.length;
+          if (chipConsts) { chipConsts.classList.add('off'); chipConsts.textContent = '扫描中 0/' + mods.length; }
+          setScanProgress(0, mods.length);
+          setStatus('常量池扫描 0/' + mods.length);
+          A.scanConstants(mods, {
+            onProgress: function (d, t) {
+              constScanSeen = d; constScanTotal = t;
+              setScanProgress(d, t);
+              setStatus('常量池扫描 ' + d + '/' + t);
+              if (chipConsts) chipConsts.textContent = '扫描中 ' + d + '/' + t;
+            }
+          }).then(function () {
+            setStatus('');
+            try {
+              var tot = mods.reduce(function (n, m) { return n + (m.constTotal || 0); }, 0);
+              constScanDone = true;
+              var cc = document.getElementById('chip-consts');
+              if (cc) { cc.classList.remove('off'); cc.innerHTML = '<b>' + tot + '</b> 常量'; }
+            } catch (e) { }
+            setTimeout(function () { setScanProgress(0, 0); }, 600);
+          }).catch(function () { setStatus(''); setScanProgress(0, 0); });
+        })();
         setTimeout(function () { progressEl.classList.remove('on'); }, 400);
 
         $('#btn-issues').disabled = false;
         $('#btn-fit').disabled = false;
         $('#btn-export').disabled = false;
+        var bc = document.getElementById('btn-consts'); if (bc) bc.disabled = false;
         $('#btn-export-lite').disabled = false;
         var bv = document.getElementById('btn-vers');
         if (bv) bv.disabled = false;
@@ -3618,4 +3817,429 @@ function modSupportsMc(mod, mcVersion) {
       });
     };
   });
+    /* ---------------- 面板框架（从注入点抽象） ----------------
+       注入点面板的行为：弹入 sheetPop、列表逐条 rowIn、关闭时列表左移 → 背景淡出 → 隐藏。
+       这里把它抽成可复用控制器；注入点自身代码保持不动，常量面板改用它。 */
+    function createPanelCtl(cfg) {
+      var root = document.getElementById(cfg.root);
+      var list = cfg.list ? document.getElementById(cfg.list) : null;
+      var body = cfg.body ? document.getElementById(cfg.body) : null;
+      var back = cfg.back ? document.getElementById(cfg.back) : null;
+      var rowSel = cfg.rowSelector || '.cst-row';
+      var timers = [];
+
+      function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+
+      function open() {
+        if (!root) return;
+        clearTimers();
+        root.classList.remove('closing', 'rows-out', 'backdrop-out');
+        if (body) body.classList.remove('detail-open');
+        if (back) back.style.display = 'none';
+        root.classList.add('on');
+      }
+
+      function close() {
+        if (!root || !root.classList.contains('on')) return;
+        if (body) body.classList.remove('detail-open');
+        if (back) back.style.display = 'none';
+
+        // 与注入点 closeTool 完全同构：
+        // 1) 淡出前先关滚动，避免滚动条在 opacity 过渡中被单独重绘闪一帧
+        var rows = Array.prototype.slice.call(root.querySelectorAll(rowSel));
+        if (list) { list.style.overflowY = 'hidden'; list.scrollTop = 0; }
+        var viewBottom = list ? list.getBoundingClientRect().bottom : window.innerHeight;
+
+        // 2) 只让「可见区域内的行」参与错开；屏外的不等
+        var visible = rows.map(function (r) {
+          var rect = r.getBoundingClientRect();
+          return { row: r, bottom: rect.bottom, vis: rect.bottom > 0 && rect.top < viewBottom };
+        }).filter(function (o) { return o.vis; })
+          .sort(function (a, b) { return b.bottom - a.bottom; });   // 最下面那行先走
+
+        visible.forEach(function (o, i) { o.row.style.setProperty('--out', (Math.min(12, i) * 14) + 'ms'); });
+        rows.forEach(function (r) {
+          if (!r.style.getPropertyValue('--out')) r.style.setProperty('--out', '0ms');
+        });
+
+        // 3) 加类触发 CSS 过渡（#cst.rows-out .cst-row）
+        if (list) list.classList.remove('fresh');   // 入场动画必须先退场，否则 fill 锁住 opacity
+        root.classList.add('rows-out');
+
+        var rowsMs = visible.length ? Math.min(180, 90 + Math.min(12, visible.length - 1) * 14) : 0;
+        var headMs = rowsMs;
+        var backdropMs = rowsMs + 70;
+        var head = root.querySelector('.sheet-head');
+        timers.push(setTimeout(function () { if (head) head.classList.add('head-fade'); }, headMs));
+        timers.push(setTimeout(function () { root.classList.add('backdrop-out'); }, backdropMs));
+        timers.push(setTimeout(function () {
+          root.classList.remove('on');
+          root.classList.remove('rows-out');
+          root.classList.remove('backdrop-out');
+          if (head) head.classList.remove('head-fade');
+          if (list) list.style.overflowY = '';
+          rows.forEach(function (r) { r.style.removeProperty('--out'); });
+        }, backdropMs + 260));
+      }
+
+      // 列表刚写入内容时播一次入场（播完摘掉 fresh，否则 fill 会锁住 opacity）
+      function markFresh() {
+        if (!list) return;
+        list.classList.add('fresh');
+        timers.push(setTimeout(function () { if (list) list.classList.remove('fresh'); }, 700));
+      }
+
+      function showDetail() {
+        if (body) body.classList.add('detail-open');
+        if (back) back.style.display = '';
+      }
+      function showList() {
+        if (body) body.classList.remove('detail-open');
+        if (back) back.style.display = 'none';
+      }
+
+      return { open: open, close: close, markFresh: markFresh, showDetail: showDetail, showList: showList };
+    }
+
+    /* ---------------- 常量扫描面板 ---------------- */
+    var cstEl = document.getElementById('cst');
+    var cstListEl = document.getElementById('cst-list');
+    var cstDetailEl = document.getElementById('cst-detail');
+    var cstCountEl = document.getElementById('cst-count');
+    var cstRows = [];
+    var constScanDone = false;   // 扫描完成前不允许打开面板
+    var constScanSeen = 0;
+    var constScanTotal = 0;
+    // 与主扫描并行的常量扫描队列：每分析出一个 mod 就排队，最多 2 个并发
+    var constQueue = [];
+    var constActive = 0;
+    var CONST_LIMIT = 2;
+    var constQueuedTotal = 0;
+
+    function pumpConstScan() {
+      if (!A.scanConstants) return;
+      while (constActive < CONST_LIMIT && constQueue.length) {
+        (function (mod) {
+          constActive++;
+          A.scanConstants([mod], {}).then(function () {
+            constScanSeen++;
+            // 分母用主扫描已知的 jar 总数（constScanTotal 由进度回调同步），
+            // 不要拿「已排队数」当分母——它会一直增长，进度条会来回跳。
+            var den = Math.max(constScanTotal || 0, constScanSeen);
+            setScanProgress(constScanSeen, den);
+            setStatus('常量池扫描 ' + constScanSeen + '/' + (constScanTotal || den));
+            if (chipConsts) chipConsts.textContent = '扫描中 ' + constScanSeen + '/' + (constScanTotal || den);
+          }).catch(function () { }).then(function () {
+            constActive--;
+            pumpConstScan();
+          });
+        })(constQueue.shift());
+      }
+    }
+
+    // 每分析出一个 mod 就调用一次：并行开始它的常量扫描
+    function enqueueConstScan(mod) {
+      if (!mod || !A.scanConstants) return;
+      if (typeof mod.reopen !== 'function') return;
+      constQueuedTotal++;
+      if (!constScanTotal) constScanTotal = constQueuedTotal;   // 主扫描还没报总数时先用已排队数
+      if (chipConsts) { chipConsts.classList.add('off'); chipConsts.textContent = '扫描中 ' + constScanSeen + '/' + constScanTotal; }
+      constQueue.push(mod);
+      pumpConstScan();
+    }
+    // 主扫描进度里带着 jar 总数，用它当常量扫描的分母
+    window.__setConstTotal = function (n) { if (n > 0) constScanTotal = n; };
+    window.__enqueueConst = enqueueConstScan;
+    var cstActive = -1;
+
+    function constsAll() {
+      var rep = currentReport;
+      if (!rep) return [];
+      var out = [];
+      (rep.mods || []).forEach(function (m) {
+        var mod = (m.ids && m.ids[0] && m.ids[0].id) || m.file || '?';
+        (m.constEntries || []).forEach(function (e) {
+          out.push({ mod: mod, file: m.file || '', text: e.text, cls: e.cls, cp: e.cp, bytes: e.bytes });
+        });
+      });
+      return out;
+    }
+
+    function renderConsts() {
+      if (!cstListEl) return;
+      var qEl = document.getElementById('cst-q');
+      var q = (qEl && qEl.value ? qEl.value : '').trim().toLowerCase();
+      var all = constsAll();
+      cstRows = q ? all.filter(function (r) {
+        return (r.text + ' ' + r.cls + ' ' + r.mod).toLowerCase().indexOf(q) >= 0;
+      }) : all;
+      if (cstCountEl) cstCountEl.textContent = cstRows.length + ' / ' + all.length;
+      var html = '';
+      cstRows.slice(0, 800).forEach(function (r, i) {
+        // --i 是入场错开的下标：封顶在前 10 条，后面的行立刻出现，
+        // 否则列表越长，末尾的行要等 i*15ms 才出现（视觉上像整页都在慢慢爬）
+        html += '<div class="inj-row cst-row' + (i === cstActive ? ' on' : '') + '" data-i="' + i + '" style="--i:' + Math.min(i, 10) + '">' +
+          '<div class="t">' + esc(r.text) + '</div>' +
+          '<div class="m">' + esc(r.mod) + ' · ' + esc(String(r.cls || '').split('/').pop()) + '</div>' +
+          '</div>';
+      });
+      cstListEl.innerHTML = html || '<div class="inj-row cst-row"><div class="m">没有匹配的常量</div></div>';
+      // 入场动画只在「刚写入」时播一次：播完就摘掉 fresh，
+      // 否则 animation 的 fill 模式会锁住 opacity，后续淡出失效。
+      if (typeof cstCtl !== 'undefined' && cstCtl.markFresh) cstCtl.markFresh();
+    }
+
+    function showConstDetail(i) {
+      var r = cstRows[i];
+      if (!r || !cstDetailEl) return;
+      cstActive = i;
+      cstDetailEl.innerHTML =
+        '<div class="card-inner">' +
+        '<div class="cst-block" style="--i:0">' +
+          '<div class="cst-kv"><b>文本</b><code>' + esc(r.text) + '</code></div>' +
+          '<div class="cst-kv"><b>长度</b>' + r.text.length + ' 字符</div>' +
+          '<div class="cst-kv"><b>字节</b>' + (r.bytes == null ? '未知' : r.bytes + ' 字节（常量池 modified UTF-8）') + '</div>' +
+        '</div>' +
+        '<div class="cst-block" style="--i:1">' +
+          '<div class="cst-kv"><b>来源模组</b>' + esc(r.mod) + '</div>' +
+          '<div class="cst-kv"><b>来源 jar</b><code>' + esc(r.file) + '</code></div>' +
+          '<div class="cst-kv"><b>所在类</b><code>' + esc(r.cls) + '</code></div>' +
+        '</div>' +
+        '<div class="cst-block" style="--i:2">' +
+          '<div class="cst-kv"><b>常量池</b>第 ' + (r.cp == null ? '?' : r.cp) + ' 项（CONSTANT_Utf8）</div>' +
+          '<div class="cst-empty">以上数值都是 class 文件里直接读到的原值，没有反汇编、没有猜测。</div>' +
+        '</div>' +
+        '</div>';
+      // 只切换高亮，不重渲染列表：重渲染会重建 DOM 并重播入场动画
+      if (cstListEl) {
+        var rowsNow = cstListEl.querySelectorAll('.cst-row');
+        for (var ri = 0; ri < rowsNow.length; ri++) {
+          rowsNow[ri].classList.toggle('on', +rowsNow[ri].getAttribute('data-i') === i);
+        }
+      }
+      if (cstBodyEl) cstBodyEl.classList.add('detail-open');
+      if (cstBack) cstBack.style.display = '';
+    }
+
+    var cstCtl = createPanelCtl({ root: "cst", list: "cst-list", body: "cst-body", back: "cst-back", rowSelector: ".cst-row" });
+    // 无头调试用：暴露开合，便于在 Electron 里逐步采样样式
+    window.__cstDebug = { ctl: cstCtl, close: function () { cstCtl.close(); }, open: function () { cstCtl.open(); } };
+    function openConsts() {
+      if (!cstEl) return;
+      // 尚未加载任何整合包：给出明确提示，而不是显示「扫描进行中 0/0」
+      if (!currentReport) {
+        setStatus('还没有加载整合包：先把游戏目录拖进来');
+        return;
+      }
+      if (!constScanDone) {
+        setStatus('常量池扫描进行中 ' + constScanSeen + '/' + constScanTotal + '，完成后再打开');
+        return;
+      }
+      cstActive = -1;
+      if (cstDetailEl) cstDetailEl.innerHTML = "<div class=\"cst-empty\">点左边任意一条常量，查看它从哪来、多长、在常量池里的位置。</div>";
+      renderConsts();
+      cstCtl.open();
+    }
+    function closeConsts() { cstCtl.close(); }
+
+    var chipConsts = document.getElementById('chip-consts');
+    if (chipConsts) chipConsts.addEventListener('click', openConsts);
+    var cstBack = document.getElementById('cst-back');
+    if (cstBack) cstBack.addEventListener('click', function () {
+      if (cstBodyEl) cstBodyEl.classList.remove('detail-open');
+      cstBack.style.display = 'none';
+    });
+    var cstBodyEl = document.getElementById('cst-body');
+    var cstClose = document.getElementById('cst-close');
+    if (cstClose) cstClose.addEventListener('click', closeConsts);
+    if (cstEl) {
+      cstEl.addEventListener('click', function (ev) {
+        // 层级回退：详情页 → 列表 → 关闭
+        if (ev.target.id === 'cst') {
+          if (cstBodyEl && cstBodyEl.classList.contains('detail-open')) {
+            cstBodyEl.classList.remove('detail-open');
+            if (cstBack) cstBack.style.display = 'none';
+          } else {
+            closeConsts();
+          }
+          return;
+        }
+        var row = ev.target.closest ? ev.target.closest('.cst-row') : null;
+        if (row && row.getAttribute('data-i') != null) showConstDetail(+row.getAttribute('data-i'));
+      });
+      // 双击背景直接退出面板（与注入点一致）
+      cstEl.addEventListener('dblclick', function (ev) {
+        if (ev.target.id === 'cst') closeConsts();
+      });
+    }
+
+    var cstQ = document.getElementById('cst-q');
+    if (cstQ) cstQ.addEventListener('input', function () { cstActive = -1; renderConsts(); });
+    /* 常量面板：独立接线
+       原接线代码被插在了一个不会执行的作用域里（无头调试证实 chip 点击无反应），
+       这里重新绑定一遍，逻辑与注入点面板一致：列表入场 → 右侧详情淡入 → 三层退场。 */
+    (function () {
+      var root = document.getElementById('cst');
+      if (!root) return;
+      var listEl = document.getElementById('cst-list');
+      var detailEl = document.getElementById('cst-detail');
+      var qEl = document.getElementById('cst-q');
+      var countEl = document.getElementById('cst-count');
+      var backEl = document.getElementById('cst-back');
+      var closeEl = document.getElementById('cst-close');
+      var chipEl = document.getElementById('chip-consts');
+      var bodyEl = document.getElementById('cst-body');
+      var rows = [];
+      var active = -1;
+      var timers = [];
+      var scanDone = false;
+
+      function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+
+      function allRows() {
+        var rep = window.__lastReport;
+        if (!rep) return [];
+        var out = [];
+        (rep.mods || []).forEach(function (m) {
+          var mod = (m.ids && m.ids[0] && m.ids[0].id) || m.file || '?';
+          (m.constEntries || []).forEach(function (e) {
+            out.push({ mod: mod, file: m.file || '', text: e.text, cls: e.cls, cp: e.cp, bytes: e.bytes });
+          });
+        });
+        return out;
+      }
+
+      function render() {
+        var q = (qEl && qEl.value ? qEl.value : '').trim().toLowerCase();
+        var all = allRows();
+        rows = q ? all.filter(function (r) {
+          return (r.text + ' ' + r.cls + ' ' + r.mod).toLowerCase().indexOf(q) >= 0;
+        }) : all;
+        if (countEl) countEl.textContent = rows.length + ' / ' + all.length;
+        var html = '';
+        rows.slice(0, 800).forEach(function (r, i) {
+          html += '<div class="inj-row cst-row' + (i === active ? ' on' : '') + '" data-i="' + i + '" style="--i:' + Math.min(i, 10) + '">' +
+            '<div class="t">' + esc2(r.text) + '</div>' +
+            '<div class="m">' + esc2(r.mod) + ' · ' + esc2(String(r.cls || '').split('/').pop()) + '</div></div>';
+        });
+        if (listEl) {
+          listEl.innerHTML = html || '<div class="inj-row cst-row"><div class="m">没有匹配的常量</div></div>';
+          if (listEl) listEl.classList.remove('fresh');   // 入场不再用行级动画
+        }
+      }
+
+      function esc2(s) {
+        return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+          return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c];
+        });
+      }
+
+      function showDetail(i) {
+        var r = rows[i];
+        if (!r || !detailEl) return;
+        active = i;
+        detailEl.innerHTML = '<div class="card-inner">' +
+          '<div class="cst-kv"><b>文本</b><code>' + esc2(r.text) + '</code></div>' +
+          '<div class="cst-kv"><b>长度</b>' + r.text.length + ' 字符</div>' +
+          '<div class="cst-kv"><b>字节</b>' + (r.bytes == null ? '未知' : r.bytes + ' 字节') + '</div>' +
+          '<div class="cst-kv"><b>来源模组</b>' + esc2(r.mod) + '</div>' +
+          '<div class="cst-kv"><b>来源 jar</b><code>' + esc2(r.file) + '</code></div>' +
+          '<div class="cst-kv"><b>所在类</b><code>' + esc2(r.cls) + '</code></div>' +
+          '<div class="cst-kv"><b>常量池</b>第 ' + (r.cp == null ? '?' : r.cp) + ' 项（CONSTANT_Utf8）</div>' +
+          '</div>';
+        if (listEl) {
+          var rs = listEl.querySelectorAll('.cst-row');
+          for (var k = 0; k < rs.length; k++) {
+            rs[k].classList.toggle('on', +rs[k].getAttribute('data-i') === i);
+          }
+        }
+        if (bodyEl) bodyEl.classList.add('detail-open');
+        if (backEl) backEl.style.display = '';
+      }
+
+      function openPanel() {
+        if (!window.__lastReport) {
+          var st = document.getElementById('status');
+          if (st) { st.style.display = ''; st.textContent = '还没有加载整合包：先把游戏目录拖进来'; }
+          return;
+        }
+        clearTimers();
+        active = -1;
+        root.classList.remove('rows-out', 'backdrop-out');
+        if (bodyEl) bodyEl.classList.remove('detail-open');
+        if (backEl) backEl.style.display = 'none';
+        if (detailEl) detailEl.innerHTML = '<div class="empty">选择左侧任意一条查看详情</div>';
+        render();
+        root.classList.add('on');
+      }
+
+      function closePanel() {
+        if (!root.classList.contains('on')) return;
+        if (bodyEl) bodyEl.classList.remove('detail-open');
+        if (backEl) backEl.style.display = 'none';
+
+        var rs = Array.prototype.slice.call(root.querySelectorAll('.cst-row'));
+        if (listEl) { listEl.style.overflowY = 'hidden'; listEl.scrollTop = 0; }
+        var viewBottom = listEl ? listEl.getBoundingClientRect().bottom : window.innerHeight;
+        var visible = rs.map(function (r) {
+          var rect = r.getBoundingClientRect();
+          return { row: r, bottom: rect.bottom, vis: rect.bottom > 0 && rect.top < viewBottom };
+        }).filter(function (o) { return o.vis; }).sort(function (a, b) { return b.bottom - a.bottom; });
+        visible.forEach(function (o, i) { o.row.style.setProperty('--out', (Math.min(12, i) * 14) + 'ms'); });
+        rs.forEach(function (r) { if (!r.style.getPropertyValue('--out')) r.style.setProperty('--out', '0ms'); });
+        if (listEl) listEl.classList.remove('fresh');
+        root.classList.add('rows-out');
+
+        var rowsMs = visible.length ? Math.min(180, 90 + Math.min(12, visible.length - 1) * 14) : 0;
+        // 与注入点同序：列表收尾时标题开始淡出，背景随后跟进
+        timers.push(setTimeout(function () {
+          var hd = root.querySelector('.sheet-head');
+          if (hd) hd.classList.add('head-fade');
+        }, rowsMs));
+        timers.push(setTimeout(function () { root.classList.add('backdrop-out'); }, rowsMs + 70));
+        timers.push(setTimeout(function () {
+          root.classList.remove('on');
+          root.classList.remove('rows-out');
+          root.classList.remove('backdrop-out');
+          var hd2 = root.querySelector('.sheet-head');
+          if (hd2) hd2.classList.remove('head-fade');
+          if (listEl) listEl.style.overflowY = '';
+          rs.forEach(function (r) { r.style.removeProperty('--out'); });
+        }, rowsMs + 70 + 260));
+      }
+
+      if (chipEl) chipEl.addEventListener('click', openPanel);
+      window.__openConsts = openPanel;   // 供右键菜单「搜索字符串常量」调用
+      if (closeEl) closeEl.addEventListener('click', closePanel);
+      if (backEl) backEl.addEventListener('click', function () {
+        if (bodyEl) bodyEl.classList.remove('detail-open');
+        backEl.style.display = 'none';
+      });
+      if (qEl) qEl.addEventListener('input', function () { active = -1; render(); });
+      root.addEventListener('click', function (ev) {
+        if (ev.target === root) {
+          // 与注入点一致：单击空白只在详情页时回到列表，顶层单击不退出
+          if (bodyEl && bodyEl.classList.contains('detail-open')) {
+            bodyEl.classList.remove('detail-open');
+            if (backEl) backEl.style.display = 'none';
+          }
+          return;
+        }
+        var row = ev.target.closest ? ev.target.closest('.cst-row') : null;
+        if (row && row.getAttribute('data-i') != null) showDetail(+row.getAttribute('data-i'));
+      });
+      root.addEventListener('dblclick', function (ev) { if (ev.target === root) closePanel(); });
+      document.addEventListener('keydown', function (ev) {
+        if (ev.key !== 'Escape' || !root.classList.contains('on')) return;
+        if (bodyEl && bodyEl.classList.contains('detail-open')) {
+          bodyEl.classList.remove('detail-open');
+          if (backEl) backEl.style.display = 'none';
+        } else {
+          closePanel();
+        }
+      });
+
+      // 扫描完成后允许打开（沿用已有的 chip 状态更新逻辑，这里只兜底解除禁用）
+      window.__cstReady = function () { scanDone = true; if (chipEl) chipEl.classList.remove('off'); };
+    })();
 })();

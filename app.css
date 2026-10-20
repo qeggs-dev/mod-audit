@@ -337,7 +337,7 @@ main {
 }
 #tool.on { display: flex; }
 /* 关键：把面板高度锁死在视口内，否则 grid 行会被内容撑高，子元素的 overflow 不生效 */
-#tool .sheet {
+#tool .sheet, #cst .sheet {
   width: min(1180px, 100%);
   height: 100%;
   max-height: 100%;
@@ -345,8 +345,8 @@ main {
   flex-direction: column;
   overflow: hidden;
 }
-#tool .sheet-head { flex: 0 0 auto; }
-#tool .sheet-head input {
+#tool .sheet-head, #cst .sheet-head { flex: 0 0 auto; }
+#tool .sheet-head input, #cst .sheet-head input {
   width: 300px;
   background: rgba(255, 255, 255, .05);
   border: 1px solid var(--line-strong);
@@ -1062,3 +1062,298 @@ details.group[open] > summary::before { content: '▾ '; }
 .cfg-hint { margin-top: 6px; font-size: 11px; color: var(--fg-mute); }
 .cfg-err { margin-top: 4px; font-size: 11px; color: var(--danger, #ff6b6b); }
 .cfg-sub { margin: 10px 0 4px; font-size: 11.5px; color: var(--fg-dim, #b9c0cf); }
+
+/* 第二条进度条：常量池异步扫描 */
+#progress2 {
+  position: absolute; left: 0; right: 0; bottom: -5px; height: 2px;
+  background: transparent; opacity: 0; transition: opacity .2s ease;
+  z-index: 1;
+}
+#progress2.on { opacity: 1; }
+#progress2 > i {
+  display: block; height: 100%; width: 0%;
+  background: linear-gradient(90deg, #6ea8fe, #b98cff);
+  transition: width .18s linear;
+}
+/* ---------- 常量扫描面板（与注入点同一套观感） ---------- */
+#cst {
+  position: fixed; inset: 0; z-index: 47;
+  display: flex; align-items: stretch; justify-content: center;
+  background: rgba(4,6,10,.22); backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+  visibility: hidden; opacity: 0; pointer-events: none; overflow: hidden;
+  transition: opacity .18s ease, visibility 0s linear .18s;
+}
+#cst.on { visibility: visible; opacity: 1; pointer-events: auto; transition: opacity .18s ease, visibility 0s; }
+#cst.closing { transition: opacity .22s ease .1s, visibility 0s linear .34s; }
+
+.cst-sheet {
+  width: min(1180px, 100%); height: 100%; max-height: 100%;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: rgba(16,20,28,.5);
+  backdrop-filter: blur(10px) saturate(1.1); -webkit-backdrop-filter: blur(10px) saturate(1.1);
+}
+.cst-head {
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+  border-bottom: 1px solid rgba(255,255,255,.07);
+}
+.cst-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.cst-head h3 span { margin-left: 8px; font-weight: 400; font-size: 11px; color: var(--fg-mute); }
+.cst-head input {
+  flex: 1; max-width: 380px; background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.1); border-radius: 8px;
+  color: var(--fg); padding: 6px 10px; font-size: 12px;
+}
+/* 与注入点一致：左侧列表占满、右侧详情从 0 宽滑出到 420px，列表自然让出位置 */
+.cst-body.split { flex: 1 1 auto; display: flex; min-height: 0; overflow: hidden; padding: 0; }
+#cst-list { flex: 1 1 auto; min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 14px 20px; }
+#cst-detail { flex: 0 0 auto; width: 0; overflow: hidden; transition: width .34s cubic-bezier(.16, 1, .3, 1); }
+.cst-body.split.detail-open #cst-detail { width: 420px; border-left: 1px solid var(--line); }
+/* 详情用固定宽度，避免展开过程中文字反复重排 */
+#cst-detail .cst-inner { width: 420px; padding: 14px 18px 24px; font-size: 12px; }
+.cst-row { padding: 7px 14px; font-size: 12px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.04); }
+.cst-row:hover { background: rgba(255,255,255,.04); }
+.cst-row .t { color: var(--fg); font-family: var(--mono, monospace); font-size: 11.5px; }
+.cst-row .m { color: var(--fg-mute); font-size: 11px; margin-top: 2px; }
+.cst-row.on { background: rgba(110,168,254,.12); }
+.cst-empty { color: var(--fg-mute); font-size: 12px; }
+.cst-kv { font-size: 12px; line-height: 1.9; }
+.cst-kv b { color: var(--fg-mute); font-weight: 400; display: inline-block; min-width: 84px; }
+.cst-kv code { font-family: var(--mono, monospace); font-size: 11.5px; }
+.cst-block { margin-bottom: 14px; }
+
+/* ---------- 常量面板：复用注入点那套动效 ---------- */
+#cst.on .cst-sheet { animation: sheetPop .36s var(--ease-spring) both; }
+
+.cst-row { will-change: opacity, transform; }
+#cst-list.fresh .cst-row {
+  animation: rowIn .44s var(--ease-spring) both;
+  animation-delay: calc(var(--i, 0) * 15ms);
+}
+
+/* 关闭：列表逐条向左淡出 → 背景淡出 → 隐藏（与注入点顺序一致） */
+#cst.rows-out .cst-row {
+  opacity: 0;
+  transform: translateX(-16px);
+  transition: opacity .14s ease, transform .14s ease;
+  transition-delay: var(--out, 0ms);
+}
+#cst.rows-out #cst-list.fresh .cst-row { animation: none; }
+
+#cst.backdrop-out { background: rgba(4, 6, 10, 0); backdrop-filter: blur(0); }
+#cst.backdrop-out .cst-sheet { opacity: 0; transition: opacity .18s ease; }
+/* 常量面板：滚动条与注入点一致，sliver 很细、深色轨道 */
+#cst-list, #cst-detail { scrollbar-gutter: stable; }
+#cst-list::-webkit-scrollbar, #cst-detail::-webkit-scrollbar { width: 8px; }
+#cst-list::-webkit-scrollbar-track, #cst-detail::-webkit-scrollbar-track { background: transparent; }
+#cst-list::-webkit-scrollbar-thumb, #cst-detail::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.12); border-radius: 4px;
+}
+#cst-list::-webkit-scrollbar-thumb:hover, #cst-detail::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,.2);
+}
+/* 详情展开/收起交给上面的 width 过渡，这里不再隐藏列表 */
+/* 常量 chip：扫描未完成时不可点 */
+.chip.link.off { opacity: .45; pointer-events: none; }
+/* === 常量面板：复制自注入点 === */
+#cst-list.fresh .inj-row{ animation: rowIn .44s var(--ease-spring) both;
+  animation-delay: calc(var(--i, 0) * 15ms); }
+#cst .sheet-head.head-fade{ opacity: 0; }
+#cst{ transition: background .18s ease, backdrop-filter .18s ease; }
+#cst.backdrop-out{ background: rgba(4, 6, 10, 0);
+  backdrop-filter: blur(0); }
+#cst.backdrop-out .sheet{ opacity: 0;
+  transition: opacity .18s ease; }
+#cst.rows-out #cst-list.fresh .inj-row{ animation: none; }
+#cst.on{ display: flex; }
+#cst .sheet-head, #cst .sheet-head{ flex: 0 0 auto; }
+#cst .sheet-head input, #cst .sheet-head input{ width: 300px;
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 5px 10px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  outline: none; }
+#cst .sheet-head input:focus{ border-color: rgba(91, 157, 255, .55); }
+#cst-list{ flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 14px 20px; }
+#cst-detail{ flex: 0 0 auto;
+  width: 0;
+  overflow: hidden;
+  transition: width .34s cubic-bezier(.16, 1, .3, 1); }
+.sheet-body.split.detail-open #cst-detail{ width: 420px;
+  border-left: 1px solid var(--line); }
+.sheet-body.split.detail-open #cst-detail .card-inner{ transform: none; opacity: 1; }
+#cst-detail dl{ margin: 0; display: grid; grid-template-columns: 74px 1fr; gap: 5px 10px; }
+#cst-detail dt{ color: var(--fg-mute); font-size: 11px; }
+#cst-detail dd{ margin: 0; word-break: break-all; font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+#cst-list::-webkit-scrollbar{ width: 9px; }
+#cst-list::-webkit-scrollbar-track{ background: transparent; }
+#cst-list::-webkit-scrollbar-thumb{ background: rgba(255,255,255,.14);
+  border-radius: 9px;
+  border: 2px solid transparent;
+  background-clip: content-box; }
+#cst-list::-webkit-scrollbar-thumb:hover{ background: rgba(255,255,255,.24); background-clip: content-box; }
+
+/* 常量面板滚动条（最终覆盖，放在样式表末尾以确保生效）
+   目标：细、半透明拇指、透明轨道；gutter 固定，滚动条不压到详情区 */
+#cst-list, #cst-detail {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,.16) transparent;
+  scrollbar-gutter: stable both-edges;
+}
+#cst-list { padding-right: 8px; }
+#cst-list::-webkit-scrollbar,
+#cst-detail::-webkit-scrollbar { width: 10px; background: transparent; }
+#cst-list::-webkit-scrollbar-track,
+#cst-detail::-webkit-scrollbar-track { background: transparent; margin: 4px 0; }
+#cst-list::-webkit-scrollbar-thumb,
+#cst-detail::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.16);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+#cst-list::-webkit-scrollbar-thumb:hover,
+#cst-detail::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.28); background-clip: content-box; }
+
+/* 常量面板：显示/隐藏与淡出（最终覆盖，务必放在末尾）
+   copied 规则里的 #cst{transition: background...} 会覆盖掉 opacity 过渡，
+   导致关闭时容器瞬间消失、淡出看不到。这里把它补回来。 */
+#cst {
+  transition: opacity .18s ease, visibility 0s linear .18s;
+}
+#cst.on {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity .18s ease, visibility 0s;
+}
+/* 退场期间即使掉了 .on，也保持可见，让淡出播完 */
+#cst.backdrop-out {
+  visibility: visible;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 常量面板：详情改成「完整宽度 + 淡入淡出」，不再从 0 宽挤压展开 */
+#cst-body.split #cst-detail {
+  width: 420px;
+  flex: 0 0 420px;
+  opacity: 0;
+  transform: translateX(8px);
+  transition: opacity .16s ease, transform .2s ease;
+  pointer-events: none;
+}
+#cst-body.split.detail-open #cst-detail {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+/* 列表让位的宽度过渡保留，但不再影响详情自身尺寸 */
+#cst-body.split #cst-list { transition: flex-basis .2s ease; }
+
+/* 容器始终 display:flex，靠 visibility/opacity 控制显示，
+   这样移除 .on 时才会真的淡出，而不是瞬间消失 */
+#cst { display: flex; visibility: hidden; opacity: 0; transition: opacity .18s ease, visibility 0s linear .18s; }
+#cst.on { visibility: visible; opacity: 1; transition: opacity .18s ease, visibility 0s; }
+#cst.backdrop-out { visibility: visible; opacity: 0; transition: opacity .22s ease, visibility 0s linear .22s; }
+
+/* 常量详情：每次换内容都淡入一次（选中切换时可见） */
+@keyframes cstFadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+#cst-detail .card-inner { animation: cstFadeIn .18s ease both; }
+
+/* 常量面板退场：整窗淡出（最末规则，确保不被前面任何规则覆盖） */
+#cst.closing {
+  visibility: visible !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity .25s ease, visibility 0s linear .25s !important;
+}
+#cst.closing .sheet {
+  opacity: 0 !important;
+  transform: translateY(6px) scale(.995) !important;
+  transition: opacity .22s ease, transform .22s ease !important;
+}
+
+/* === 与注入点对齐的补齐（结构核对后缺的三条） === */
+/* 1) 弹入动画：原来误写成 #cst.on .cst-sheet，而实际类是 .sheet，所以从没生效 */
+#cst.on .sheet { animation: sheetPop .36s var(--ease-spring) both; }
+/* 2) 面板内容尺寸（注入点靠 #tool .sheet 提供，常量面板缺这条） */
+#cst .sheet {
+  width: min(1180px, 100%);
+  height: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* 3) 列表逐条入场：注入点用 #inj-list.fresh .inj-row，常量面板需要对应规则 */
+#cst-list.fresh .inj-row {
+  animation: rowIn .44s var(--ease-spring) both;
+  animation-delay: calc(var(--i, 0) * 15ms);
+}
+/* 4) 退场逐条左移：确保 --out 延迟被使用（与注入点同一条实现） */
+#cst.rows-out .inj-row {
+  opacity: 0;
+  transform: translateX(-16px);
+  transition: opacity .14s ease, transform .14s ease;
+  transition-delay: var(--out, 0ms);
+}
+#cst.rows-out #cst-list.fresh .inj-row { animation: none; }
+
+/* === 常量列表：去掉行级入场动画 ===
+   根因：行入场动画带 animation-fill-mode: both，起始帧 opacity:0 会一直保持；
+   而列表渲染时面板往往还没 .on，动画不启动 → 行永远停在 0。
+   现在行默认可见，入场交给面板自己的 sheetPop，退场靠纯 transition。 */
+#cst-list.fresh .inj-row,
+#cst-list.fresh .cst-row,
+#cst-list .inj-row,
+#cst-list .cst-row {
+  animation: none !important;
+  opacity: 1;
+  transform: none;
+}
+/* 退场：只在这时候压透明度（纯 transition，无动画干扰） */
+#cst.rows-out .cst-row,
+#cst.rows-out .inj-row {
+  opacity: 0 !important;
+  transform: translateX(-16px) !important;
+  transition: opacity .16s ease, transform .16s ease !important;
+  transition-delay: var(--out, 0ms) !important;
+}
+
+/* 退场第二阶段：背景与面板一起淡出（最终覆盖） */
+#cst.backdrop-out { opacity: 0 !important; transition: opacity .22s ease !important; }
+#cst.backdrop-out .sheet { opacity: 0 !important; transform: translateY(6px) !important; transition: opacity .22s ease, transform .22s ease !important; }
+
+/* 详情「让出位置」：宽度 0 → 420px（与注入点同一条曲线），同时淡入 */
+#cst-body.split #cst-detail {
+  width: 0;
+  flex: 0 0 auto;
+  opacity: 0;
+  transform: none;
+  pointer-events: none;
+  overflow: hidden;
+  transition: width .38s cubic-bezier(.16, 1, .3, 1), opacity .22s ease;
+}
+#cst-body.split.detail-open #cst-detail {
+  width: 420px;
+  opacity: 1;
+  pointer-events: auto;
+}
+#cst-detail .card-inner { width: 420px; }
+
+/* 退场稍微放慢：列表 .24s，错开 14ms/行 */
+#cst.rows-out .cst-row,
+#cst.rows-out .inj-row {
+  transition: opacity .24s ease, transform .24s ease !important;
+  transition-delay: var(--out, 0ms) !important;
+}

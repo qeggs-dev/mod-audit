@@ -110,7 +110,7 @@
     for (let i = 1; i < cpCount; i++) {
       const tag = u1();
       switch (tag) {
-        case 1: { const len = u2(); cp[i] = { tag, s: utf8(bytes.subarray(p, p + len)) }; p += len; break; }
+        case 1: { const len = u2(); cp[i] = { tag, s: utf8(bytes.subarray(p, p + len)), bl: len }; p += len; break; }
         case 3: case 4: cp[i] = { tag, v: u4() }; break;
         case 5: case 6: cp[i] = { tag }; u4(); u4(); i++; break; // long/double 占两个槽
         case 7: case 8: case 16: case 19: case 20: cp[i] = { tag, idx: u2() }; break;
@@ -129,7 +129,7 @@
       const sv = e.s;
       if (sv.length < 4 || sv.length > 120) continue;
       // 具体过滤规则在收集阶段按「设置」里的正则列表应用（见 STR_SKIP / setStringFilters）
-      consts.push(sv);
+      consts.push({ v: sv, cp: ci, bytes: (cp[ci] && cp[ci].bl) || sv.length });
     }
 
     const utf8Of = (i) => (cp[i] && cp[i].tag === 1 ? cp[i].s : null);
@@ -780,29 +780,6 @@
       else out.side = { value: 'unknown', source: null };
     }
 
-    // 常量池字符串扫描：与 side 判定无关，单独跑一遍（每个 jar 限量 40 个类）。
-    // 结果用于搜索的 str: 领域与原始数据导出。
-    {
-      const cset = new Set();
-      let cScanned = 0;
-      for (const p of zip.entries.keys()) {
-        if (!/\.class$/.test(p)) continue;
-        if (cScanned >= 40) break;
-        cScanned++;
-        try {
-          const pc = parseClass(await zip.read(p));
-          if (pc && pc.consts) {
-            for (const c of pc.consts) {
-              let skip = false;
-              for (let i2 = 0; i2 < STR_SKIP.length; i2++) { if (STR_SKIP[i2].test(c)) { skip = true; break; } }
-              if (!skip) cset.add(c);
-            }
-          }
-        } catch (e) { }
-      }
-      out.constStrings = Array.from(cset).slice(0, 300);
-      out.constTotal = cset.size;
-    }
 
     return out;
   }
@@ -843,6 +820,10 @@
     });
     STR_SKIP = regs;
   }
+  /* 可选计时：collect 传入 { timing: {} } 时，把各阶段耗时累加进去 */
+  let TIMING = null;
+  function tAdd(k, ms) { if (TIMING) TIMING[k] = (TIMING[k] || 0) + ms; }
+
   /* 解析器版本：改「怎么读 jar」时加这个号，与软件版本独立。 */
   const PARSER_VERSION = '1.0.0';
 
@@ -956,8 +937,10 @@
     };
 
     let zip;
+    const __u0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     try { zip = unzip(bytes); }
     catch (e) { mod.error = '无法解压: ' + e.message; return mod; }
+      if (zip) tAdd('unzip', ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - __u0);
 
     const has = (n) => zip.entries.has(n);
     const readText = async (n) => {
@@ -1004,6 +987,7 @@
     mod.side = meta.side || { value: 'unknown', source: null };
     mod.constStrings = meta.constStrings || [];
     mod.constTotal = meta.constTotal || 0;
+    mod.reopen = meta.reopen || null;   // 供异步常量扫描重新读字节
     mod.forgeDeps = meta.forgeDeps || [];
     mod.forgeIncompatible = meta.forgeIncompatible || [];
     mod.depends = meta.depends || {};
@@ -1113,7 +1097,58 @@
    * hooks.onMod(mod | null, index, total)   mod 为 null 表示这个 jar 读取失败
    * hooks.onProgress(index, total, name)
    */
+  /* 常量池异步扫描：在主线分析完成后再跑，分批让出事件循环。
+     hooks: { onProgress(done, total) }。每个 mod 用 reopen() 重新拿字节，避免长期占内存。 */
+  async function scanConstants(mods, hooks) {
+    hooks = hooks || {};
+    const onProgress = hooks.onProgress;
+    const total = (mods || []).length;
+    let done = 0;
+    for (const m of (mods || [])) {
+      try {
+        if (m && typeof m.reopen === "function" && !m.constTotal) {
+          const bytes = await m.reopen();
+          const zip = unzip(bytes);
+          const cset = new Set();
+          const entries = [];
+          let scanned = 0;
+          for (const p of zip.entries.keys()) {
+            if (!/\.class$/.test(p)) continue;
+            if (scanned >= 40) break;
+            scanned++;
+            try {
+              const pc = parseClass(await zip.read(p));
+              if (pc && pc.consts) {
+                for (const c0 of pc.consts) {
+                  const c = (c0 && typeof c0 === "object") ? c0.v : c0;
+                  const cpIdx = (c0 && typeof c0 === "object") ? c0.cp : null;
+                  const nbytes = (c0 && typeof c0 === "object") ? c0.bytes : null;
+                  let skip = false;
+                  for (let i = 0; i < STR_SKIP.length; i++) { if (STR_SKIP[i].test(c)) { skip = true; break; } }
+                  if (skip) continue;
+                  if (!cset.has(c)) {
+                    cset.add(c);
+                    if (entries.length < 600) entries.push({ text: c, cls: p, cp: cpIdx, bytes: nbytes });
+                  }
+                }
+              }
+            } catch (e) { }
+            if (scanned % 24 === 0) await new Promise(function (r) { setTimeout(r, 0); });
+          }
+          m.constStrings = Array.from(cset).slice(0, 300);
+          m.constTotal = cset.size;
+          m.constEntries = entries;
+        }
+      } catch (e) { }
+      done++;
+      if (onProgress) onProgress(done, total);
+      await new Promise(function (r) { setTimeout(r, 0); });
+    }
+    return { scanned: done, total: total };
+  }
+
   async function collect(input, hooks) {
+    TIMING = (hooks && hooks.timing) || null;
     const jars = input.jars || [];
     const mods = [];
     const errors = [];
@@ -1126,6 +1161,7 @@
       try {
         const bytes = await j.getBytes();
         mod = await analyzeJar(j.name, bytes);
+          mod.reopen = j.getBytes;   // 供异步常量扫描重新读字节
         mods.push(mod);
       } catch (e) {
         errors.push({ file: j.name, error: e.message });
@@ -1836,6 +1872,7 @@
     normAt,
     renderText,
     renderEnglish,
+      scanConstants,
     setStringFilters,
     DEFAULT_STR_SKIP,
     unzip,

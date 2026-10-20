@@ -15,6 +15,7 @@
     <span id="inst-chip" class="chip">等待拖入</span>
     <span id="chip-mods" class="chip link" title="在资源管理器中打开 mods 文件夹">— mod</span>
     <span id="chip-inj" class="chip link" title="打开注入点分析">— 注入点</span>
+    <span id="chip-consts" class="chip link off" title="查看常量池扫描结果（扫描完成后可用）">— 常量</span>
     <span id="chip-crit" class="chip link" title="高亮所有含高风险内容的节点，点击空白处取消">— 高风险</span>
     <span class="spacer"></span>
     <span id="status" class="chip" style="display:none"></span>
@@ -23,6 +24,7 @@
     <button id="btn-reset" class="btn">重置</button>
     <button id="btn-cfg" class="btn" title="设置">设置</button>
     <div id="progress"><i></i></div>
+    <div id="progress2"><i></i></div>
   </header>
 
   <!-- 设置：样式 / 导出过滤 / 字符串过滤 -->
@@ -166,10 +168,32 @@
 <!-- 文字右键菜单 -->
 <div id="ctx-menu">
   <div class="ctx-item" data-act="copy">复制</div>
-  <div class="ctx-item" data-act="search">搜索</div>
+  <div class="ctx-item" data-act="inj">搜索注入点</div>
+  <div class="ctx-item" data-act="const">搜索字符串常量</div>
+  <div class="ctx-item" data-act="search">搜索 Internet</div>
 </div>
 
 <!-- 版本统计 -->
+  <!-- 常量扫描结果 -->
+  <div id="cst">
+    <div class="sheet wide">
+      <div class="sheet-head">
+        <h3>常量扫描</h3>
+        <input id="cst-q" type="text" placeholder="过滤：文本 / 类名 / 模组" autocomplete="off" spellcheck="false">
+        <span id="cst-count" class="chip"></span>
+        <span class="spacer"></span>
+        <button id="cst-back" class="tool" style="display:none">← 列表</button>
+        <button id="cst-close">关闭</button>
+      </div>
+      <div class="sheet-body split" id="cst-body">
+        <div id="cst-list"></div>
+        <div id="cst-detail"><div class="empty">选择左侧任意一条查看详情</div></div>
+      </div>
+    </div>
+  </div>
+
+  </div>
+
 <div id="ver">
   <div class="sheet wide">
     <div class="sheet-head">
