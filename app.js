@@ -2168,6 +2168,21 @@
         var tool = document.getElementById('tool');
         if (tool) tool.classList.add('on');
       }
+    } else if (kind === 'mod') {
+      // 主搜索：按模组领域限定
+      var qMod = document.getElementById('q');
+      if (qMod) {
+        qMod.value = ctxText;
+        if (typeof applySearch === 'function') applySearch();
+        qMod.focus();
+      }
+    } else if (kind === 'jar') {
+      var qJar = document.getElementById('q');
+      if (qJar) {
+        qJar.value = 'jar:' + ctxText;
+        if (typeof applySearch === 'function') applySearch();
+        qJar.focus();
+      }
     } else if (kind === 'const') {
       var cstQ = document.getElementById('cst-q');
       if (cstQ) {
@@ -2199,6 +2214,8 @@
       if (act === 'copy') ctxCopy();
       else if (act === 'inj') ctxSearchDomain('inj');
       else if (act === 'const') ctxSearchDomain('const');
+      else if (act === 'mod') ctxSearchDomain('mod');
+      else if (act === 'jar') ctxSearchDomain('jar');
       else if (act === 'search') ctxSearch();
     });
 
@@ -2963,7 +2980,7 @@ function modSupportsMc(mod, mcVersion) {
   var dirPath = null;          // 已加载目录的真实路径（Electron 才拿得到）
   var dirName = '';
   var lastSignature = '';      // 用来判断「又拖了同一个目录」
-  var appVersion = '0.28.1';    // 浏览器版兜底；桌面版以 preload 返回值为准
+  var appVersion = '0.29.1';    // 浏览器版兜底；桌面版以 preload 返回值为准
 
   function applyTitle(name) {
     document.title = (name ? name + ' · ' : '') + 'mod-audit v' + appVersion;
@@ -3649,6 +3666,7 @@ function modSupportsMc(mod, mcVersion) {
           var w = null;
           var canWorker = (typeof Worker !== "undefined") && location.protocol !== "file:";
           if (canWorker) { try { w = new Worker("worker.js"); } catch (e) { w = null; } }
+          if (w) { constInWorker = true; workerConst = {}; }
           if (!w) {
             resolve(A.collect({
               instance: inst,
@@ -3696,11 +3714,30 @@ function modSupportsMc(mod, mcVersion) {
                 graph.addMod(m.mod);
                 if (window.__enqueueConst) window.__enqueueConst(m.mod);
               }
+            } else if (m.type === "const") {
+              // Worker 里跑完一个 mod 的常量扫描：先存起来，done 之后合并进 mods
+              constInWorker = true;
+              workerConst[m.file] = { entries: m.entries || [], total: m.total || 0 };
+              constScanSeen++;
+              var denC = Math.max(constScanTotal || 0, constScanSeen);
+              setScanProgress(constScanSeen, denC);
+              setStatus('常量池扫描 ' + constScanSeen + '/' + denC);
+              if (chipConsts) chipConsts.textContent = '扫描中 ' + constScanSeen + '/' + denC;
             } else if (m.type === "done") {
               try { w.terminate(); } catch (e) { }
               if (activeWorker === w) activeWorker = null;
+              // 把 Worker 扫描出来的常量结果合并回 mods
+              try {
+                (m.mods || []).forEach(function (mm) {
+                  var r = workerConst[mm.file];
+                  if (r) {
+                    mm.constEntries = r.entries;
+                    mm.constTotal = r.total;
+                  }
+                });
+              } catch (e) { }
               // Worker 回传的对象里函数会被结构化克隆丢弃：按文件名把 reopen 补回来，
-              // 否则主线程的异步常量扫描会因为没有 reopen 而直接跳过。
+              // 仅在主线程还要补扫（constInWorker 为 false）时才需要。
               try {
                 var byName = {};
                 (lastFiles || []).forEach(function (f) { byName[f.name] = f.file; });
@@ -3749,7 +3786,19 @@ function modSupportsMc(mod, mcVersion) {
 
         // 常量池扫描放到主线完成之后异步跑：不影响首屏，进度走第二条进度条
         (function () {
-          // 常量扫描已经随主扫描并行跑过（enqueueConstScan），这里只等队列排空后收尾
+          // Worker 模式：常量扫描已在 worker 里跑完并随 done 合并回来，这里只收尾
+          if (constInWorker) {
+            constScanDone = true;
+            constScanSeen = constScanTotal;
+            setScanProgress(0, 0);
+            setStatus('');
+            try {
+              var totW = ((report && report.mods) || []).reduce(function (n, m) { return n + (m.constTotal || 0); }, 0);
+              if (chipConsts) { chipConsts.classList.remove('off'); chipConsts.innerHTML = '<b>' + totW + '</b> 常量'; }
+            } catch (e) { }
+            return;
+          }
+          // 主线程并行模式：等队列排空后收尾
           if (constQueuedTotal > 0) {
             (function waitDone() {
               if (constActive > 0 || constQueue.length > 0) { setTimeout(waitDone, 120); return; }
@@ -3915,6 +3964,8 @@ function modSupportsMc(mod, mcVersion) {
     var constActive = 0;
     var CONST_LIMIT = 2;
     var constQueuedTotal = 0;
+    var constInWorker = false;   // true 时常量扫描在 Worker 里跑，主线程不再排队
+    var workerConst = {};        // file -> { entries, total }，Worker 回传的扫描结果
 
     function pumpConstScan() {
       if (!A.scanConstants) return;
@@ -3939,6 +3990,7 @@ function modSupportsMc(mod, mcVersion) {
 
     // 每分析出一个 mod 就调用一次：并行开始它的常量扫描
     function enqueueConstScan(mod) {
+      if (constInWorker) return;   // Worker 模式：常量扫描已在那里并行跑，主线程不要再排一遍
       if (!mod || !A.scanConstants) return;
       if (typeof mod.reopen !== 'function') return;
       constQueuedTotal++;
@@ -4041,6 +4093,7 @@ function modSupportsMc(mod, mcVersion) {
       cstCtl.open();
     }
     function closeConsts() { cstCtl.close(); }
+    window.__openConsts = openConsts;   // 供右键菜单「搜索字符串常量」调用
 
     var chipConsts = document.getElementById('chip-consts');
     if (chipConsts) chipConsts.addEventListener('click', openConsts);
@@ -4053,32 +4106,37 @@ function modSupportsMc(mod, mcVersion) {
     var cstClose = document.getElementById('cst-close');
     if (cstClose) cstClose.addEventListener('click', closeConsts);
     if (cstEl) {
+      // 单击空白：在详情页时回到列表；顶层单击不退出（与注入点一致，退出靠双击）
+      var wasDetailOpenCst = false;
+      cstEl.addEventListener('pointerdown', function (ev) {
+        if (ev.target !== cstEl) return;
+        wasDetailOpenCst = !!(cstBodyEl && cstBodyEl.classList.contains('detail-open'));
+      });
       cstEl.addEventListener('click', function (ev) {
-        // 层级回退：详情页 → 列表 → 关闭
-        if (ev.target.id === 'cst') {
+        if (ev.target === cstEl) {
           if (cstBodyEl && cstBodyEl.classList.contains('detail-open')) {
             cstBodyEl.classList.remove('detail-open');
             if (cstBack) cstBack.style.display = 'none';
-          } else {
-            closeConsts();
           }
           return;
         }
         var row = ev.target.closest ? ev.target.closest('.cst-row') : null;
         if (row && row.getAttribute('data-i') != null) showConstDetail(+row.getAttribute('data-i'));
       });
-      // 双击背景直接退出面板（与注入点一致）
+      // 双击空白：只在最顶层时关闭（双击前若在详情页，第一次单击已收起详情，这里只当回到列表）
       cstEl.addEventListener('dblclick', function (ev) {
-        if (ev.target.id === 'cst') closeConsts();
+        if (ev.target !== cstEl) return;
+        if (wasDetailOpenCst) { wasDetailOpenCst = false; return; }
+        closeConsts();
       });
     }
 
     var cstQ = document.getElementById('cst-q');
     if (cstQ) cstQ.addEventListener('input', function () { cstActive = -1; renderConsts(); });
-    /* 常量面板：独立接线
-       原接线代码被插在了一个不会执行的作用域里（无头调试证实 chip 点击无反应），
-       这里重新绑定一遍，逻辑与注入点面板一致：列表入场 → 右侧详情淡入 → 三层退场。 */
-    (function () {
+    /* 已停用的旧接线（当初误判「面板代码未执行」时写的重复实现）。
+       真正的接线在上面的 cstCtl / openConsts / closeConsts 里，这里整体短路，
+       避免两套监听器同时生效（那会造成单击就退出、双击逻辑打架）。 */
+    if (false) (function () {
       var root = document.getElementById('cst');
       if (!root) return;
       var listEl = document.getElementById('cst-list');
@@ -4228,7 +4286,18 @@ function modSupportsMc(mod, mcVersion) {
         var row = ev.target.closest ? ev.target.closest('.cst-row') : null;
         if (row && row.getAttribute('data-i') != null) showDetail(+row.getAttribute('data-i'));
       });
-      root.addEventListener('dblclick', function (ev) { if (ev.target === root) closePanel(); });
+      // 双击空白关闭：与注入点完全一致的判定
+      // （双击前若在详情页，第一次单击已经把详情收起来，这次双击只当「回到列表」）
+      var wasDetailOpenCst = false;
+      root.addEventListener('pointerdown', function (ev) {
+        if (ev.target !== root) return;
+        wasDetailOpenCst = !!(bodyEl && bodyEl.classList.contains('detail-open'));
+      });
+      root.addEventListener('dblclick', function (ev) {
+        if (ev.target !== root) return;
+        if (wasDetailOpenCst) { wasDetailOpenCst = false; return; }
+        closePanel();
+      });
       document.addEventListener('keydown', function (ev) {
         if (ev.key !== 'Escape' || !root.classList.contains('on')) return;
         if (bodyEl && bodyEl.classList.contains('detail-open')) {

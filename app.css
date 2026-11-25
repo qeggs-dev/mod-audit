@@ -1357,3 +1357,20 @@ details.group[open] > summary::before { content: '▾ '; }
   transition: opacity .24s ease, transform .24s ease !important;
   transition-delay: var(--out, 0ms) !important;
 }
+
+/* ===== 关闭第二阶段：面板与背景一起淡出（文件末尾最终覆盖，勿再往下加 ===== */
+/* 关闭期间 .on 一直没摘（要等 backdropMs+260 才摘），所以 1087 / 1233-1238 / 1266
+   这三处 #cst.on 的 opacity:1 仍在匹配 —— 这里用 !important + (1,2,0) 钉死。
+   transition 是单一属性、会整条互相顶掉（1162 的 background/backdrop-filter 与
+   1230/1265 的 opacity），所以把 background/backdrop-filter 的过渡一并写回，
+   否则背景色与模糊会瞬切，看起来仍然像"啪"一下没了。 */
+#cst.backdrop-out { opacity: 0 !important; transition: opacity .22s ease !important; }
+#cst.on.backdrop-out,
+#cst.backdrop-out {
+  opacity: 0 !important;
+  background: rgba(4, 6, 10, 0) !important;
+  -webkit-backdrop-filter: blur(0) !important;
+  backdrop-filter: blur(0) !important;
+  transition: opacity .22s ease, background-color .22s ease, backdrop-filter .22s ease !important;
+}
+
