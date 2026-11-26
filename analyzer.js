@@ -922,7 +922,7 @@
     };
     return JSON.stringify(out);
   }
-  async function analyzeJar(name, bytes) {
+  async function analyzeJar(name, bytes, ctx) {
     const mod = {
       file: name,
       loader: 'unknown',
@@ -940,6 +940,7 @@
     const __u0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     try { zip = unzip(bytes); }
     catch (e) { mod.error = '无法解压: ' + e.message; return mod; }
+    if (ctx) ctx.zip = zip;
       if (zip) tAdd('unzip', ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - __u0);
 
     const has = (n) => zip.entries.has(n);
@@ -1099,6 +1100,66 @@
    */
   /* 常量池异步扫描：在主线分析完成后再跑，分批让出事件循环。
      hooks: { onProgress(done, total) }。每个 mod 用 reopen() 重新拿字节，避免长期占内存。 */
+  /* 从一个已经解压好的 zip 里扫常量（不重新读盘） */
+  async function scanZipConstants(zip, hooks) {
+    hooks = hooks || {};
+    const now = () => ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+    const t0 = now();
+    const cset = new Set();
+    const entries = [];
+    let scanned = 0;
+    const maxClasses = hooks.maxClasses || 40;
+    for (const p of zip.entries.keys()) {
+      if (!/\.class$/.test(p)) continue;
+      if (scanned >= maxClasses) break;
+      scanned++;
+      try {
+        const pc = parseClass(await zip.read(p));
+        if (pc && pc.consts) {
+          for (const c0 of pc.consts) {
+            const c = (c0 && typeof c0 === 'object') ? c0.v : c0;
+            const cpIdx = (c0 && typeof c0 === 'object') ? c0.cp : null;
+            const nbytes = (c0 && typeof c0 === 'object') ? c0.bytes : null;
+            let skip = false;
+            for (let i = 0; i < STR_SKIP.length; i++) { if (STR_SKIP[i].test(c)) { skip = true; break; } }
+            if (skip) continue;
+            if (!cset.has(c)) {
+              cset.add(c);
+              if (entries.length < 600) entries.push({ text: c, cls: p, cp: cpIdx, bytes: nbytes });
+            }
+          }
+        }
+      } catch (e) { }
+      if (scanned % 24 === 0) await new Promise(function (r) { setTimeout(r, 0); });
+    }
+    tAdd('const', now() - t0);
+    return { strings: Array.from(cset).slice(0, 300), total: cset.size, entries };
+  }
+
+  /* 独立扫描入口（改过滤词后重扫 / 主线程降级路径）：靠 reopen 重新读盘 */
+  async function scanConstants(mods, hooks) {
+    hooks = hooks || {};
+    const onProgress = hooks.onProgress;
+    const total = (mods || []).length;
+    let done = 0;
+    for (const m of (mods || [])) {
+      try {
+        if (m && typeof m.reopen === "function" && !m.constTotal) {
+          const bytes = await m.reopen();
+          const zip = unzip(bytes);
+          const r = await scanZipConstants(zip, hooks);
+          m.constStrings = r.strings;
+          m.constTotal = r.total;
+          m.constEntries = r.entries;
+        }
+      } catch (e) { }
+      done++;
+      if (onProgress) onProgress(done, total);
+      await new Promise(function (r) { setTimeout(r, 0); });
+    }
+    return { scanned: done, total: total };
+  }
+
   async function scanConstants(mods, hooks) {
     hooks = hooks || {};
     const onProgress = hooks.onProgress;
@@ -1149,6 +1210,9 @@
 
   async function collect(input, hooks) {
     TIMING = (hooks && hooks.timing) || null;
+    const wantConst = !!(hooks && typeof hooks.onConstants === 'function');
+    const CONST_LIMIT = 2;
+    const pending = [];
     const jars = input.jars || [];
     const mods = [];
     const errors = [];
@@ -1158,16 +1222,26 @@
       const j = jars[i];
       if (h.onProgress) h.onProgress(i + 1, jars.length, j.name);
       let mod = null;
+      const ctx = {};
       try {
         const bytes = await j.getBytes();
-        mod = await analyzeJar(j.name, bytes);
+        mod = await analyzeJar(j.name, bytes, ctx);
           mod.reopen = j.getBytes;   // 供异步常量扫描重新读字节
         mods.push(mod);
       } catch (e) {
         errors.push({ file: j.name, error: e.message });
       }
       if (h.onMod) h.onMod(mod, i + 1, jars.length);
+      if (wantConst && mod && ctx.zip) {
+        const zipNow = ctx.zip;
+        const p = Promise.resolve()
+          .then(function () { return h.onConstants(mod, zipNow); })
+          .catch(function () { });
+        pending.push(p);
+        while (pending.length >= CONST_LIMIT) { await pending[0]; pending.shift(); }
+      }
     }
+    while (pending.length) { await pending[0]; pending.shift(); }
     return { mods, errors };
   }
 
@@ -1873,6 +1947,7 @@
     renderText,
     renderEnglish,
       scanConstants,
+    scanZipConstants,
     setStringFilters,
     DEFAULT_STR_SKIP,
     unzip,
