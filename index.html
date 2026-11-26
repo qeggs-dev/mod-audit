@@ -49,6 +49,21 @@
         </section>
 
         <section class="cfg-block" style="--i:1">
+          <h4>扫描<span>并发分析 / 常量扫描的 Worker 数量</span></h4>
+          <label class="cfg-row">并发扫描
+            <select id="cfg-concurrency">
+              <option value="1">1（最省资源）</option>
+              <option value="2">2</option>
+              <option value="4" selected>4（默认）</option>
+              <option value="6">6</option>
+              <option value="8">8</option>
+              <option value="0">自动（按 CPU 核数）</option>
+            </select>
+          </label>
+          <div class="cfg-hint">每个 jar 互相独立，多开几个 Worker 能同时解析多个模组；机器较慢时调小。</div>
+        </section>
+
+        <section class="cfg-block" style="--i:2">
           <h4>字符串过滤<span>常量池扫描时排除哪些字符串（每行一个正则）</span></h4>
           <textarea id="cfg-strskip" spellcheck="false"></textarea>
           <div class="cfg-hint">默认规则针对描述符 / 类名 / 泛型签名 / 孤立单词；清空则保留全部字符串（体积会大很多）。</div>

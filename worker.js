@@ -37,6 +37,7 @@ function cloneable(v) {
 self.onmessage = async function (ev) {
   var msg = ev.data || {};
   if (msg.type !== 'start') return;
+  var constCap = msg.constMaxClasses || 100000;   // 默认全量
   try {
     if (self.ModAudit.setStringFilters) {
       self.ModAudit.setStringFilters({ skip: msg.strSkip || null });
@@ -60,13 +61,37 @@ self.onmessage = async function (ev) {
         onMod: function (mod) {
           if (mod) self.postMessage({ type: 'mod', mod: cloneable(mod) });
         },
-        // 分析过程中顺带跑常量扫描：复用同一个 zip，不重新读盘
+        // 分析过程中顺带跑常量扫描：复用同一个 zip，不重新读盘。
+        // 先扫一批让面板立刻能搜，再继续扫完整个 jar，过程里持续回传增量结果。
         onConstants: async function (mod, zip) {
-          var r = await self.ModAudit.scanZipConstants(zip, {});
-          mod.constStrings = r.strings;
-          mod.constTotal = r.total;
-          mod.constEntries = r.entries;
-          self.postMessage({ type: 'const', file: mod.file, entries: r.entries, total: r.total });
+          const quick = constCap <= 60 ? constCap : 60;
+          const r1 = await self.ModAudit.scanZipConstants(zip, { maxClasses: quick });
+          mod.constStrings = r1.strings;
+          mod.constTotal = r1.total;
+          mod.constEntries = r1.entries;
+          self.postMessage({
+            type: 'const', file: mod.file, entries: r1.entries, total: r1.total,
+            scanned: r1.scanned, classes: r1.classes, partial: true
+          });
+          if (constCap <= quick) return;
+
+          const r2 = await self.ModAudit.scanZipConstants(zip, {
+            maxClasses: constCap,
+            batchEvery: 400,
+            onBatch: function (entries, scanned, classes) {
+              self.postMessage({
+                type: 'const', file: mod.file, entries: entries.slice(), total: entries.length,
+                scanned: scanned, classes: classes, partial: true
+              });
+            }
+          });
+          mod.constStrings = r2.strings;
+          mod.constTotal = r2.total;
+          mod.constEntries = r2.entries;
+          self.postMessage({
+            type: 'const', file: mod.file, entries: r2.entries, total: r2.total,
+            scanned: r2.scanned, classes: r2.classes, partial: false
+          });
         }
       }
     );

@@ -185,6 +185,8 @@
     this._match = null;            // 命中的节点索引集合；null = 没在搜索
     this.cameraOn = true;
     this._camHold = 0;
+    this.loading = false;          // 加载中：跳过物理/相机，重绘限流（见 _tick）
+    this._loadDrawAt = 0;
     this._settleFrames = 0;        // 新节点加入后先跑这么多帧分离，之后没速度就完全跳过物理
     this._hintTick = 0;
     this._drawn = 0;
@@ -337,6 +339,17 @@
 
   Graph.prototype._tick = function () {
     var self = this;
+    // 加载期间：不跑物理、不做相机适配，重绘降到 ~8fps。
+    // 多出来的主线程时间留给接收 Worker 消息与进度更新，首屏结束后再补一次完整绘制。
+    if (this.loading) {
+      var now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      if (!this._loadDrawAt || now - this._loadDrawAt >= 120) {
+        this._loadDrawAt = now;
+        this._draw();
+      }
+      requestAnimationFrame(function () { self._tick(); });
+      return;
+    }
     this._step();
     this._camera();
     this._draw();
@@ -1406,6 +1419,7 @@
   var isLoading = false;      // 加载中：点画布不该弹文件选择框
   var loadToken = 0;          // 每次加载一个令牌；新加载会让旧的那次作废
     var activeWorker = null;    // 正在跑分析的 Worker（新加载时终止）
+  var activeWorkers = [];     // 并行时的全部 Worker（分片分析）
     var lastFiles = null;       // 最近一次投放的文件列表（给 Worker 用）
   var hintEl = null;
   var HINT_IDLE = '拖卡片 = 移动 · 滚轮 = 缩放 · 拖空白 = 平移 · 双击 = 自适应';
@@ -3439,6 +3453,8 @@ function modSupportsMc(mod, mcVersion) {
       if (ta) ta.value = (cfgState.strfilter || []).join('\n');
       var ts = document.getElementById('cfg-strskip');
       if (ts) ts.value = (cfgState.strSkip || (A.DEFAULT_STR_SKIP || [])).join('\n');
+      var selConcInit = document.getElementById('cfg-concurrency');
+      if (selConcInit) selConcInit.value = String(cfgState.concurrency === undefined ? 4 : cfgState.concurrency);
       // 样式滑块直接读写 graph.look（原「外观」面板已移除，这里是唯一入口）
       var LOOK_MAP = { glow: 'glow', stroke: 'rim', edge: 'edge' };
       Object.keys(LOOK_MAP).forEach(function (k) {
@@ -3481,6 +3497,12 @@ function modSupportsMc(mod, mcVersion) {
       });
       var ta = document.getElementById('cfg-strfilter');
       if (ta) ta.addEventListener('input', function () { validateStrFilter(); saveCfg(); });
+      // 并发扫描：0 = 按 CPU 核数自动，其它为固定 Worker 数（默认 4）
+      var selConc = document.getElementById('cfg-concurrency');
+      if (selConc) selConc.addEventListener('change', function () {
+        cfgState.concurrency = Number(selConc.value);
+        saveCfg();
+      });
       var ts = document.getElementById('cfg-strskip');
       if (ts) ts.addEventListener('input', function () {
         var good = [], bad = [];
@@ -3601,6 +3623,8 @@ function modSupportsMc(mod, mcVersion) {
       }
       isLoading = true;
       var token = ++loadToken;
+      activeWorkers.forEach(function (x) { try { x.terminate(); } catch (e) { } });
+      activeWorkers = [];
       if (activeWorker) { try { activeWorker.terminate(); } catch (e) { } activeWorker = null; }
       if (A.setStringFilters) A.setStringFilters({ skip: cfgState.strSkip });   // 作废上一次仍在跑的加载
 
@@ -3631,6 +3655,8 @@ function modSupportsMc(mod, mcVersion) {
       dropzone.classList.add('hide');
       document.getElementById('stage').classList.remove('idle');
       graph.reset();
+      graph.loading = true;
+      graph._loadDrawAt = 0;
       currentReport = null;
       if (qInput) qInput.value = '';
       if (qCount) { qCount.textContent = ''; qCount.style.opacity = '0'; }
@@ -3663,11 +3689,8 @@ function modSupportsMc(mod, mcVersion) {
           return { name: j.file.name, file: j.file, paths: j.paths };
         });
         return new Promise(function (resolve, reject) {
-          var w = null;
           var canWorker = (typeof Worker !== "undefined") && location.protocol !== "file:";
-          if (canWorker) { try { w = new Worker("worker.js"); } catch (e) { w = null; } }
-          if (w) { constInWorker = true; workerConst = {}; }
-          if (!w) {
+          if (!canWorker) {
             resolve(A.collect({
               instance: inst,
               jars: picked.jars.map(function (j) {
@@ -3689,80 +3712,122 @@ function modSupportsMc(mod, mcVersion) {
             }));
             return;
           }
-          if (activeWorker) { try { activeWorker.terminate(); } catch (e) { } }
-          activeWorker = w;
-          w.onmessage = function (ev) {
-            if (token !== loadToken) { try { w.terminate(); } catch (e) { } return; }
-            var m = ev.data || {};
-            if (m.type === "progress") {
-              setProgress(m.i, m.n);
-              setStatus("分析中 " + m.i + "/" + m.n + " · " + (m.name && m.name.length > 34 ? m.name.slice(0, 33) + "…" : (m.name || "")));
-              if (window.__setConstTotal) window.__setConstTotal(m.n);
-            } else if (m.type === "mod") {
-              if (m.mod) {
-                // 立刻挂上 reopen（Worker 传来的对象里函数会被克隆丢弃），
-                // 这样这条 mod 一进列表就能并行开始常量扫描
+
+          // 多个 mod 分给多个 Worker 并行分析：每个 jar 都是独立的，
+          // 单线程里堆并发没用（解压与解析都压在同一个线程），真正的并行要靠多个 Worker。
+          var total = lastFiles.length;
+          // 并发数来自设置（默认 4；0 = 按 CPU 核数自动）
+          var wantConc = cfgState.concurrency === undefined ? 4 : Number(cfgState.concurrency);
+          var cpus = navigator.hardwareConcurrency || 4;
+          var targetConc = wantConc === 0 ? cpus : wantConc;
+          var shardCount = Math.max(1, Math.min(targetConc, cpus, total));
+          var buckets = [];
+          for (var si = 0; si < shardCount; si++) buckets.push([]);
+          for (var fi = 0; fi < total; fi++) buckets[fi % shardCount].push(lastFiles[fi]);
+
+          var workers = [];
+          var shardDone = 0;
+          var shardProgress = new Array(shardCount).fill(0);
+          var modsAll = [];
+          var errorsAll = [];
+          var finished = false;
+
+          function stopAll() {
+            workers.forEach(function (x) { try { x.terminate(); } catch (e) { } });
+            workers = [];
+            activeWorkers = [];
+            activeWorker = null;
+          }
+          function fail(err) {
+            if (finished) return;
+            finished = true;
+            stopAll();
+            reject(err);
+          }
+          function reattach(mods) {
+            try {
+              var byName = {};
+              (lastFiles || []).forEach(function (f) { byName[f.name] = f.file; });
+              (mods || []).forEach(function (mm) {
+                var r = workerConst[mm.file];
+                if (r) { mm.constEntries = r.entries; mm.constTotal = r.total; }
+                var fh = byName[mm.file];
+                if (fh && !mm.reopen) {
+                  mm.reopen = function () { return fh.arrayBuffer().then(function (b) { return new Uint8Array(b); }); };
+                }
+              });
+            } catch (e) { }
+          }
+
+          buckets.forEach(function (files, bi) {
+            var w;
+            try { w = new Worker("worker.js"); } catch (e) { fail(new Error("无法创建 Worker")); return; }
+            workers.push(w);
+            constInWorker = true;
+            w.onmessage = function (ev) {
+              if (token !== loadToken) { try { w.terminate(); } catch (e) { } return; }
+              var m = ev.data || {};
+              if (m.type === "progress") {
+                shardProgress[bi] = m.i;
+                var doneJars = shardProgress.reduce(function (a, b) { return a + b; }, 0);
+                setProgress(doneJars, total);
+                setStatus("分析中 " + doneJars + "/" + total + " · " + (m.name && m.name.length > 34 ? m.name.slice(0, 33) + "…" : (m.name || "")));
+                if (window.__setConstTotal) window.__setConstTotal(total);
+              } else if (m.type === "mod") {
+                if (m.mod) {
+                  try {
+                    var fhM = null;
+                    (lastFiles || []).forEach(function (f) { if (f.name === m.mod.file) fhM = f.file; });
+                    if (fhM && !m.mod.reopen) {
+                      m.mod.reopen = function () {
+                        return fhM.arrayBuffer().then(function (b) { return new Uint8Array(b); });
+                      };
+                    }
+                  } catch (e) { }
+                  graph.addMod(m.mod);
+                }
+              } else if (m.type === "const") {
+                workerConst[m.file] = { entries: m.entries || [], total: m.total || 0 };
+                // 增量 / 全量结果都同步到图上那条 mod：常量面板打开后立刻能搜到已有结果
                 try {
-                  var fhM = null;
-                  (lastFiles || []).forEach(function (f) { if (f.name === m.mod.file) fhM = f.file; });
-                  if (fhM && !m.mod.reopen) {
-                    m.mod.reopen = function () {
-                      return fhM.arrayBuffer().then(function (b) { return new Uint8Array(b); });
-                    };
-                  }
+                  (graph.nodes || []).forEach(function (nd) {
+                    if (nd.mod && nd.mod.file === m.file) {
+                      nd.mod.constEntries = m.entries || [];
+                      nd.mod.constTotal = m.total || 0;
+                    }
+                  });
                 } catch (e) { }
-                graph.addMod(m.mod);
-                if (window.__enqueueConst) window.__enqueueConst(m.mod);
+                if (m.partial) {
+                  var sumC = 0;
+                  Object.keys(workerConst).forEach(function (k) { sumC += workerConst[k].total || 0; });
+                  if (chipConsts) chipConsts.textContent = '扫描中 · 已收 ' + sumC + ' 常量';
+                } else {
+                  constScanSeen++;
+                  var denC = Math.max(constScanTotal || 0, constScanSeen);
+                  setScanProgress(constScanSeen, denC);
+                  setStatus('常量池扫描 ' + constScanSeen + '/' + denC);
+                  if (chipConsts) chipConsts.textContent = '扫描中 ' + constScanSeen + '/' + denC;
+                }
+              } else if (m.type === "done") {
+                try { w.terminate(); } catch (e) { }
+                reattach(m.mods);
+                modsAll = modsAll.concat(m.mods || []);
+                errorsAll = errorsAll.concat(m.errors || []);
+                shardDone++;
+                if (!finished && shardDone >= shardCount) {
+                  finished = true;
+                  stopAll();
+                  resolve({ mods: modsAll, errors: errorsAll, instance: inst });
+                }
+              } else if (m.type === "error") {
+                fail(new Error(m.message || "worker error"));
               }
-            } else if (m.type === "const") {
-              // Worker 里跑完一个 mod 的常量扫描：先存起来，done 之后合并进 mods
-              constInWorker = true;
-              workerConst[m.file] = { entries: m.entries || [], total: m.total || 0 };
-              constScanSeen++;
-              var denC = Math.max(constScanTotal || 0, constScanSeen);
-              setScanProgress(constScanSeen, denC);
-              setStatus('常量池扫描 ' + constScanSeen + '/' + denC);
-              if (chipConsts) chipConsts.textContent = '扫描中 ' + constScanSeen + '/' + denC;
-            } else if (m.type === "done") {
-              try { w.terminate(); } catch (e) { }
-              if (activeWorker === w) activeWorker = null;
-              // 把 Worker 扫描出来的常量结果合并回 mods
-              try {
-                (m.mods || []).forEach(function (mm) {
-                  var r = workerConst[mm.file];
-                  if (r) {
-                    mm.constEntries = r.entries;
-                    mm.constTotal = r.total;
-                  }
-                });
-              } catch (e) { }
-              // Worker 回传的对象里函数会被结构化克隆丢弃：按文件名把 reopen 补回来，
-              // 仅在主线程还要补扫（constInWorker 为 false）时才需要。
-              try {
-                var byName = {};
-                (lastFiles || []).forEach(function (f) { byName[f.name] = f.file; });
-                (m.mods || []).forEach(function (mm) {
-                  var fh = byName[mm.file];
-                  if (fh && !mm.reopen) {
-                    mm.reopen = function () {
-                      return fh.arrayBuffer().then(function (b) { return new Uint8Array(b); });
-                    };
-                  }
-                });
-              } catch (e) { }
-              resolve({ mods: m.mods, errors: m.errors, instance: m.instance });
-            } else if (m.type === "error") {
-              try { w.terminate(); } catch (e) { }
-              if (activeWorker === w) activeWorker = null;
-              reject(new Error(m.message || "worker error"));
-            }
-          };
-          w.onerror = function (e) {
-            try { w.terminate(); } catch (e2) { }
-            if (activeWorker === w) activeWorker = null;
-            reject(new Error((e && e.message) || "worker 启动失败"));
-          };
-          w.postMessage({ type: "start", files: lastFiles, instance: inst, strSkip: cfgState.strSkip || null });
+            };
+            w.onerror = function (e) { fail(new Error((e && e.message) || "worker 启动失败")); };
+            w.postMessage({ type: "start", files: files, instance: inst, strSkip: cfgState.strSkip || null, constMaxClasses: window.__constMaxClasses || 100000 });
+          });
+          activeWorkers = workers;
+          activeWorker = workers[0] || null;
         });
       }).then(function (res) {
         if (token !== loadToken) return null;   // 已被新加载取代，丢弃结果
@@ -3856,10 +3921,17 @@ function modSupportsMc(mod, mcVersion) {
           renderIdle();
         }
         isLoading = false;
+        // 加载结束：恢复物理与相机跟随，补一次完整绘制
+        graph.loading = false;
+        graph._loadDrawAt = 0;
+        graph._camHold = 12;
+        graph._settleFrames = Math.max(graph._settleFrames, 40);
+        graph._draw();
         return report;
       }).catch(function (e) {
         if (!(e && e.message === '__superseded__')) {
           isLoading = false;
+          graph.loading = false;
           setStatus('出错：' + ((e && e.message) || e));
         }
         return null;

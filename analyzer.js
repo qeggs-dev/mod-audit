@@ -71,11 +71,19 @@
     }
 
     let spent = 0;
+    // 同一次分析里，同一个条目可能被读多次（归属启发式、Java 版本、常量扫描）。
+    // 浏览器端每次 read 都是一次解压，这里做一个小缓存，避免重复解压。
+    const CACHE_MAX_ENTRY = 512 * 1024;   // 单条目超过 512 KB 不缓存
+    const CACHE_MAX_TOTAL = 8 * 1024 * 1024;
+    const cache = new Map();
+    let cachedBytes = 0;
     async function read(name) {
       const e = entries.get(name);
       if (!e) return null;
       if (e.compSize === 0xffffffff || e.uncompSize === 0xffffffff) throw new Error('Zip64 条目暂不支持: ' + name);
       if (e.uncompSize > MAX_ENTRY) throw new Error('条目过大，已跳过: ' + name);
+      const hit = cache.get(name);
+      if (hit) return hit;
       spent += e.uncompSize;
       if (spent > MAX_TOTAL) throw new Error('单 jar 解压总量超限（疑似 zip 炸弹）');
       const at = e.localOffset;
@@ -84,9 +92,15 @@
       const le = dv.getUint16(at + 28, true);
       const start = at + 30 + ln + le;
       const raw = bytes.subarray(start, start + e.compSize);
-      if (e.method === 0) return raw;
-      if (e.method === 8) return await inflateRaw(raw);
-      throw new Error('不支持的压缩方式 ' + e.method + ': ' + name);
+      let out;
+      if (e.method === 0) out = raw;
+      else if (e.method === 8) out = await inflateRaw(raw);
+      else throw new Error('不支持的压缩方式: ' + e.method + ' (' + name + ')');
+      if (e.uncompSize > 0 && e.uncompSize <= CACHE_MAX_ENTRY && cachedBytes + out.length <= CACHE_MAX_TOTAL) {
+        cache.set(name, out);
+        cachedBytes += out.length;
+      }
+      return out;
     }
 
     return { entries, read };
@@ -762,11 +776,13 @@
     else if (out.hasClientEntry && out.hasMainEntry) out.side = { value: 'both', source: '同时有 main 与 client 入口' };
     else {
       // 元数据没给结论时，看类文件引用了哪一侧的 Minecraft 类（启发式，不是定论）
+      // 每次 zip.read 都是一次浏览器解压，这里既限上限、也在证据足够时提前收手
       let clientRefs = 0, serverRefs = 0, scanned = 0;
       const dec = (typeof TextDecoder !== 'undefined') ? new TextDecoder('latin1') : null;
       for (const p of zip.entries.keys()) {
         if (!/\.class$/.test(p)) continue;
-        if (scanned >= 60) break;
+        if (scanned >= 24) break;
+        if (clientRefs + serverRefs >= 6) break;   // 证据够了，不再解压后面的类
         scanned++;
         try {
           const s = dec ? dec.decode(await zip.read(p)) : '';
@@ -1100,7 +1116,9 @@
    */
   /* 常量池异步扫描：在主线分析完成后再跑，分批让出事件循环。
      hooks: { onProgress(done, total) }。每个 mod 用 reopen() 重新拿字节，避免长期占内存。 */
-  /* 从一个已经解压好的 zip 里扫常量（不重新读盘） */
+  /* 从一个已经解压好的 zip 里扫常量（不重新读盘）
+     hooks.onBatch(entries, scanned, totalClasses) 会周期性回调：
+     用来先把前几十个类的结果交给界面（面板立刻可搜），再继续扫完剩余部分。 */
   async function scanZipConstants(zip, hooks) {
     hooks = hooks || {};
     const now = () => ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
@@ -1109,6 +1127,10 @@
     const entries = [];
     let scanned = 0;
     const maxClasses = hooks.maxClasses || 40;
+    const batchEvery = hooks.batchEvery || 0;
+    let totalClasses = 0;
+    for (const k of zip.entries.keys()) if (/\.class$/.test(k)) totalClasses++;
+    let lastBatch = 0;
     for (const p of zip.entries.keys()) {
       if (!/\.class$/.test(p)) continue;
       if (scanned >= maxClasses) break;
@@ -1125,15 +1147,20 @@
             if (skip) continue;
             if (!cset.has(c)) {
               cset.add(c);
-              if (entries.length < 600) entries.push({ text: c, cls: p, cp: cpIdx, bytes: nbytes });
+              if (entries.length < 5000) entries.push({ text: c, cls: p, cp: cpIdx, bytes: nbytes });
             }
           }
         }
       } catch (e) { }
+      if (hooks.onBatch && batchEvery && scanned - lastBatch >= batchEvery) {
+        lastBatch = scanned;
+        try { hooks.onBatch(entries, scanned, totalClasses); } catch (e) { }
+      }
       if (scanned % 24 === 0) await new Promise(function (r) { setTimeout(r, 0); });
     }
     tAdd('const', now() - t0);
-    return { strings: Array.from(cset).slice(0, 300), total: cset.size, entries };
+    if (hooks.onBatch) { try { hooks.onBatch(entries, scanned, totalClasses); } catch (e) { } }
+    return { strings: Array.from(cset).slice(0, 3000), total: cset.size, entries, scanned, classes: totalClasses };
   }
 
   /* 独立扫描入口（改过滤词后重扫 / 主线程降级路径）：靠 reopen 重新读盘 */
@@ -1189,7 +1216,7 @@
                   if (skip) continue;
                   if (!cset.has(c)) {
                     cset.add(c);
-                    if (entries.length < 600) entries.push({ text: c, cls: p, cp: cpIdx, bytes: nbytes });
+                    if (entries.length < 5000) entries.push({ text: c, cls: p, cp: cpIdx, bytes: nbytes });
                   }
                 }
               }
@@ -1211,7 +1238,7 @@
   async function collect(input, hooks) {
     TIMING = (hooks && hooks.timing) || null;
     const wantConst = !!(hooks && typeof hooks.onConstants === 'function');
-    const CONST_LIMIT = 2;
+    const CONST_LIMIT = (hooks && hooks.constConcurrency) || 2;
     const pending = [];
     const jars = input.jars || [];
     const mods = [];
