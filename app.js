@@ -533,6 +533,29 @@
     if (this.searchQuery) this.setSearch(this.searchQuery);
   };
 
+  // 依赖它的所有节点：沿依赖边反着走（edge.to = 被依赖方，edge.from = 需要方），
+  // 返回传递闭包里除自己以外的节点下标。Ctrl+拖动时用。
+  Graph.prototype.dependentsOf = function (idx) {
+    var out = [];
+    var seen = new Set([idx]);
+    var queue = [idx];
+    var edges = Array.from(this.edges.values());
+    while (queue.length) {
+      var cur = queue.pop();
+      for (var i = 0; i < edges.length; i++) {
+        var e = edges[i];
+        if (e.to !== cur || e.from == null) continue;
+        if (seen.has(e.from)) continue;
+        // 根节点（加载器）固定不动，不能跟着走
+        if (this.nodes[e.from] && this.nodes[e.from].isRoot) continue;
+        seen.add(e.from);
+        out.push(e.from);
+        queue.push(e.from);
+      }
+    }
+    return out;
+  };
+
   Graph.prototype._link = function (a, b, type, sev, from, to) {
     // 端点必须是合法节点索引：依赖可能指向没有成为节点的 mod（jar-in-jar 只登记 id），
     // 那时 a/b 会是 undefined，Math.min 得到 NaN，就会画出一条「选谁都不亮的孤儿线」。
@@ -1055,6 +1078,16 @@
         ctx.scale(k, k);
         ctx.translate(-nd.x, -nd.y);
       }
+      // Ctrl 拖动时，被一起带走的节点画一圈虚线，方便看出这次会动哪些
+      if (this.dragGroup && this.dragGroup.indexOf(i) >= 0) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(110,168,254,.8)';
+        ctx.setLineDash([5, 4]);
+        ctx.lineWidth = 1.5;
+        rrPath(ctx, nd.x - nd.w / 2 - 5, nd.y - nd.h / 2 - 5, nd.w + 10, nd.h + 10, 12, 12, 12, 12);
+        ctx.stroke();
+        ctx.restore();
+      }
       this._drawCard(ctx, nd, {
         alpha: alpha * fade,
         selected: isSel,
@@ -1336,7 +1369,22 @@
         var nd = self.nodes[hit];
         if (!nd.isRoot) {
           // 记下「指针到卡片中心」的偏移，之后 1:1 跟随
-          self.drag = { i: hit, ox: nd.x - w.x, oy: nd.y - w.y };
+          var group = [];
+          // Ctrl（macOS 用 Cmd）拖动：把依赖它的节点一起带走
+          if (ev.ctrlKey || ev.metaKey) {
+            var deps = self.dependentsOf(hit);
+            if (deps.length) {
+              group = deps.map(function (k) {
+                return { k: k, dx: self.nodes[k].x - nd.x, dy: self.nodes[k].y - nd.y };
+              });
+              group.forEach(function (g) {
+                var ch = self.nodes[g.k];
+                if (ch) { ch.vx = 0; ch.vy = 0; }
+              });
+            }
+          }
+          self.drag = { i: hit, ox: nd.x - w.x, oy: nd.y - w.y, group: group };
+          self.dragGroup = group.length ? group.map(function (g) { return g.k; }) : null;
           nd.vx = 0; nd.vy = 0;
         }
         c.classList.add('grabbing');
@@ -1369,6 +1417,17 @@
         nd.x = w.x + self.drag.ox;
         nd.y = w.y + self.drag.oy;
         nd.vx = 0; nd.vy = 0;
+        // Ctrl 拖动时，同组节点按各自的相对偏移一起走
+        if (self.drag.group && self.drag.group.length) {
+          for (var gi = 0; gi < self.drag.group.length; gi++) {
+            var g = self.drag.group[gi];
+            var ch = self.nodes[g.k];
+            if (!ch) continue;
+            ch.x = nd.x + g.dx;
+            ch.y = nd.y + g.dy;
+            ch.vx = 0; ch.vy = 0;
+          }
+        }
         return;
       }
       if (self.panStart) {
@@ -1387,6 +1446,7 @@
     function up() {
       var wasDragging = !!self.drag;
       self.drag = null;
+      self.dragGroup = null;
       self.panStart = null;
       c.classList.remove('grabbing');
       // 放下后可能压到别人，跑几帧分离把它们推开
@@ -1520,7 +1580,7 @@
     if (g.critFocus) tags.push('高风险');
     hintEl.textContent = '已绘制 ' + g._drawn + ' / ' + total + ' 个节点 · 缩放 ' +
       g.zoom.toFixed(2) + (tags.length ? ' · 筛选：' + tags.join(' / ') : '') +
-      ' · 拖拽移动 · 滚轮缩放';
+      ' · 拖拽移动 · Ctrl+拖拽连带依赖它的节点 · 滚轮缩放';
   }
 
   function sideHeader(kicker, title, sub, sub2) {
